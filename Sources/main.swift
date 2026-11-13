@@ -578,6 +578,7 @@ final class Scenario: ObservableObject {
             notesError = error.localizedDescription
         }
     }
+    @Published var selectedCriterion: Int?
     @Published var expandedComments: Set<String> = []
     @Published var selectedTask: String?
     @Published var taskDetailsID: String?
@@ -603,6 +604,7 @@ final class Scenario: ObservableObject {
             editingTask = nil
             selectedTask = nil
             taskDetailsID = nil
+            selectedCriterion = nil
             expandedComments = []
         }
         ticketURL = entry.url
@@ -744,6 +746,7 @@ struct BudgetView: View {
                 }
                 .frame(width: columnWidth, alignment: .topLeading)
                 Divider()
+                ScrollViewReader { proxy in
                 ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if let ticket = scenario.ticket {
@@ -768,6 +771,7 @@ struct BudgetView: View {
                         .padding(.top, 4)
                         ForEach(Array(ticket.acceptanceCriteria.enumerated()), id: \.offset) { index, criterion in
                             criterionView(criterion, index: index, comments: ticket.criterionComments ?? [])
+                                .id(index)
                         }
                         let unmatched = (ticket.criterionComments ?? []).filter { !ticket.acceptanceCriteria.contains($0.original) }
                         if !unmatched.isEmpty {
@@ -788,7 +792,7 @@ struct BudgetView: View {
                     }
                     .padding(.horizontal, 6)
                     ForEach(tasks, id: \.id) { task in
-                        item(task)
+                        item(task).id(task.id)
                     }
                 }
                 .padding(.top, 12)
@@ -796,6 +800,13 @@ struct BudgetView: View {
                         Text(scenario.ticketReadError ?? "Loading ticket…")
                             .font(.system(size: 17)).foregroundStyle(.orange)
                     }
+                }
+                }
+                .onChange(of: scenario.selectedCriterion) { _, index in
+                    if let index { proxy.scrollTo(index) }
+                }
+                .onChange(of: scenario.selectedTask) { _, id in
+                    if let id { proxy.scrollTo(id) }
                 }
                 }
                 .frame(width: columnWidth, alignment: .topLeading)
@@ -874,19 +885,29 @@ struct BudgetView: View {
         }
     }
 
-    private func criterionView(_ criterion: String, index: Int, comments: [CriterionComment]) -> some View {
+    private func anchoredComments(_ criterion: String, index: Int, comments: [CriterionComment]) -> [CriterionComment] {
         let id = "AC-\(index + 1)"
-        let anchored = comments.filter {
+        return comments.filter {
             $0.original == criterion && ($0.criterion == id ||
                 scenario.ticket?.acceptanceCriteria.filter { $0 == criterion }.count == 1)
         }
+    }
+
+    private func criterionView(_ criterion: String, index: Int, comments: [CriterionComment]) -> some View {
+        let anchored = anchoredComments(criterion, index: index, comments: comments)
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(id).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+            Text("AC-\(index + 1)").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
                 .monospacedDigit().frame(width: 52, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
                 Text(highlightedCriterion(criterion, comments: anchored))
                     .font(.system(size: 17)).textSelection(.enabled)
                 ForEach(anchored) { comment in commentCard(comment) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if scenario.selectedCriterion == index {
+                RoundedRectangle(cornerRadius: 5).fill(Color.blue.opacity(0.32))
             }
         }
     }
@@ -1388,9 +1409,20 @@ struct BudgetView: View {
         .padding(.vertical, 2)
     }
 
-    func toggleSelectedTaskDetails() -> Bool {
-        guard scenario.mode == .ticket, !scenario.showingStories,
-              let id = scenario.selectedTask, currentTasks.contains(where: { $0.id == id }) else {
+    func toggleSelectedDetails() -> Bool {
+        guard scenario.mode == .ticket, !scenario.showingStories else { return false }
+        if let index = scenario.selectedCriterion, let ticket = scenario.ticket,
+           ticket.acceptanceCriteria.indices.contains(index) {
+            let ids = Set(anchoredComments(ticket.acceptanceCriteria[index], index: index,
+                                           comments: ticket.criterionComments ?? []).map(\.id))
+            if ids.isSubset(of: scenario.expandedComments) {
+                scenario.expandedComments.subtract(ids)
+            } else {
+                scenario.expandedComments.formUnion(ids)
+            }
+            return true
+        }
+        guard let id = scenario.selectedTask, currentTasks.contains(where: { $0.id == id }) else {
             return false
         }
         scenario.taskDetailsID = scenario.taskDetailsID == id ? nil : id
@@ -1398,14 +1430,18 @@ struct BudgetView: View {
     }
 
     func moveSelection(by step: Int) {
-        guard scenario.mode == .ticket else { return }
+        guard scenario.mode == .ticket, !scenario.showingStories else { return }
         let tasks = currentTasks
-        guard !tasks.isEmpty else { return }
-        let current = tasks.firstIndex { $0.id == scenario.selectedTask }
-        let next = current.map { min(max($0 + step, 0), tasks.count - 1) }
-            ?? (step > 0 ? 0 : tasks.count - 1)
+        let criteriaCount = scenario.ticket?.acceptanceCriteria.count ?? 0
+        let count = criteriaCount + tasks.count
+        guard count > 0 else { return }
+        let current = scenario.selectedCriterion
+            ?? tasks.firstIndex { $0.id == scenario.selectedTask }.map { $0 + criteriaCount }
+        let next = current.map { min(max($0 + step, 0), count - 1) }
+            ?? (step > 0 ? 0 : count - 1)
         scenario.taskDetailsID = nil
-        scenario.selectedTask = tasks[next].id
+        scenario.selectedCriterion = next < criteriaCount ? next : nil
+        scenario.selectedTask = next < criteriaCount ? nil : tasks[next - criteriaCount].id
     }
 
     private struct StoryForecast {
@@ -1608,6 +1644,7 @@ struct BudgetView: View {
                 }
             } else {
                 Button(value.isEmpty ? "—" : value) {
+                    scenario.selectedCriterion = nil
                     scenario.selectedTask = task.id
                     scenario.draft = field == "Started" ? task.startedAt ?? "" :
                         field == "Finished" ? task.completedAt ?? "" : value
@@ -1673,6 +1710,7 @@ struct BudgetView: View {
                 .foregroundStyle(spent > task.minutes ? Color.orange : Color.primary)
                 .help(spent > task.minutes ? "Above estimate by " + clock(spent - task.minutes) : "Time spent")
             Button {
+                scenario.selectedCriterion = nil
                 scenario.selectedTask = task.id
                 scenario.taskDetailsID = task.id
             } label: {
@@ -1851,7 +1889,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return clipboard.setString(key, forType: .string)
         }
         panel.moveSelection = budgetView.moveSelection
-        panel.toggleTaskDetails = budgetView.toggleSelectedTaskDetails
+        panel.toggleTaskDetails = budgetView.toggleSelectedDetails
         panel.isEditing = { budgetView.scenario.editingTask != nil }
         panel.cancelEdit = budgetView.cancelEdit
         let container = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
