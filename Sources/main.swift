@@ -167,7 +167,23 @@ struct LocalTicket: Codable {
 
 enum TicketStore {
     static var selectedFile: URL?
-    static var root: URL { URL.applicationSupportDirectory.appendingPathComponent("Time Budget") }
+    static let root: URL = {
+        let support = URL.applicationSupportDirectory
+        let destination = support.appendingPathComponent("Sprint")
+        let legacy = support.appendingPathComponent("Time Budget")
+        let files = FileManager.default
+        if files.fileExists(atPath: legacy.path), !files.fileExists(atPath: destination.path) {
+            do {
+                try files.moveItem(at: legacy, to: destination)
+            } catch {
+                if !files.fileExists(atPath: destination.path) {
+                    NSLog("Sprint could not migrate its local data: %@", error.localizedDescription)
+                    return legacy
+                }
+            }
+        }
+        return destination
+    }()
 
     static func storyFile(_ key: String) -> URL {
         let name = Data(key.utf8).base64EncodedString().replacingOccurrences(of: "/", with: "_")
@@ -192,8 +208,8 @@ enum TicketStore {
     }
 
     static var file: URL {
-        selectedFile ?? ProcessInfo.processInfo.environment["TIME_BUDGET_FILE"].map { URL(fileURLWithPath: $0) }
-        ?? URL.applicationSupportDirectory.appendingPathComponent("Time Budget/ticket.json")
+        selectedFile ?? ProcessInfo.processInfo.environment["SPRINT_FILE"].map { URL(fileURLWithPath: $0) }
+        ?? root.appendingPathComponent("ticket.json")
     }
 
     static func read() throws -> LocalTicket {
@@ -255,7 +271,7 @@ enum TicketStore {
     static func cli(_ args: [String]) throws {
         guard let command = args.first else { return }
         if command == "notes-show" || command == "notes-set" { try ReportNotes.cli(args); return }
-        if ProcessInfo.processInfo.environment["TIME_BUDGET_FILE"] == nil {
+        if ProcessInfo.processInfo.environment["SPRINT_FILE"] == nil {
             let entries = registry()
             if command == "story-list" {
                 print(String(decoding: try JSONEncoder().encode(entries.map(\.ticket)), as: UTF8.self))
@@ -450,7 +466,7 @@ enum TicketStore {
 
 enum ReportNotes {
     static var file: URL {
-        ProcessInfo.processInfo.environment["TIME_BUDGET_NOTES_FILE"].map { URL(fileURLWithPath: $0) }
+        ProcessInfo.processInfo.environment["SPRINT_NOTES_FILE"].map { URL(fileURLWithPath: $0) }
             ?? TicketStore.root.appendingPathComponent("speaking-notes.json")
     }
 
@@ -661,7 +677,7 @@ struct BudgetView: View {
                 .frame(height: 24, alignment: .topLeading)
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Ticket time budget").font(.system(size: 19, weight: .semibold))
+                    Text("Ticket Budget").font(.system(size: 19, weight: .semibold))
                     if let ticket = scenario.ticket {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
@@ -986,7 +1002,7 @@ struct BudgetView: View {
         return reportShell(.planning, subtitle: "Sprint review & next sprint · Wednesday, 10:00") {
             taskActivity(weekly: true)
             VStack(alignment: .leading, spacing: 5) {
-                Text("Weekly time budget").font(.system(size: 19, weight: .semibold))
+                Text("Weekly Budget").font(.system(size: 19, weight: .semibold))
                 definition("🔒", "Workweek", clock(LocalTicket.workweek), "Fixed weekly budget.")
                 definition("👥", "Fixed meetings", "−" + clock(LocalTicket.meetingMinutes), "Total recurring meeting time.", total: true)
                 VStack(alignment: .leading, spacing: 3) {

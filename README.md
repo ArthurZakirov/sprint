@@ -17,7 +17,7 @@ Add `~/.local/bin` to your PATH if `sprint` is unavailable. Quit a running copy 
 
 - **Option-J** opens Ticket Decision. Control-Tab and Control-Shift-Tab cycle through stories. Enter copies the story key.
 - **Option-D** opens Daily Standup. Control-Shift-Tab goes to an earlier standup, and Control-Tab moves forward.
-- **Option-P** opens Planning and the weekly time budget.
+- **Option-P** opens Planning and the weekly budget.
 
 ## CLI
 
@@ -34,4 +34,4 @@ sprint --ticket SAMPLE-1 ticket view --json
 
 ## Data
 
-Tickets and speaking notes stay in `~/Library/Application Support/Time Budget`. This repository contains source and build instructions. The app does not connect to Jira.
+Tickets and speaking notes stay in `~/Library/Application Support/Sprint`. This repository contains source and build instructions. The app does not connect to Jira.
