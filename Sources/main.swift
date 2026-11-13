@@ -1103,7 +1103,14 @@ struct BudgetView: View {
             }
         let totalSpent = groups.flatMap(\.rows).reduce(0) { $0 + $1.spent }
         return VStack(alignment: .leading, spacing: 30) {
-            reportTableRow(title: "Total spent", status: "", spent: clock(totalSpent), heading: true)
+            HStack(spacing: reportColumnSpacing) {
+                reportTableRow(title: "Total spent", status: "", spent: clock(totalSpent), heading: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Color.clear.frame(height: 1)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, Self.reportSectionInset)
             if let error = scenario.notesError { Text(error).foregroundStyle(.orange) }
             if groups.isEmpty {
                 Text("—").foregroundStyle(.secondary)
@@ -1123,7 +1130,7 @@ struct BudgetView: View {
                     }
                     .padding(10)
                     .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
-                    HStack(alignment: .top, spacing: 22) {
+                    HStack(alignment: .top, spacing: reportColumnSpacing) {
                         VStack(alignment: .leading, spacing: 8) {
                             if group.rows.isEmpty {
                                 Text("—").foregroundStyle(.secondary)
@@ -1150,12 +1157,15 @@ struct BudgetView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private let reportColumnSpacing: CGFloat = 22
+    private static let reportSectionInset: CGFloat = 16
+
     private struct ReportSection: ViewModifier {
         let tint: Color
 
         func body(content: Content) -> some View {
             content
-                .padding(16)
+                .padding(BudgetView.reportSectionInset)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                 .overlay {
