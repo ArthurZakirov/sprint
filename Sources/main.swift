@@ -30,6 +30,28 @@ enum BudgetMode: UInt32, CaseIterable {
 
 enum SprintPreferences {
     static let store = UserDefaults(suiteName: "local.sprint.settings")!
+
+    static func referenceKey(_ story: String, _ field: String) -> String {
+        "story.\(story).\(field)"
+    }
+
+    static func addReference(_ args: [String]) throws {
+        guard args.count == 4, ["prs", "chats", "codex", "worktrees"].contains(args[2]),
+              TicketStore.registry().contains(where: { $0.ticket.key == args[1] }) else {
+            throw TicketStore.failure("Unknown story or reference type.")
+        }
+        let value = args[3].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains(where: \.isNewline) else {
+            throw TicketStore.failure("Provide one reference per command.")
+        }
+        let key = referenceKey(args[1], args[2])
+        var lines = (store.string(forKey: key) ?? "").split(whereSeparator: \.isNewline).map(String.init)
+        if !lines.contains(value) {
+            lines.append(value)
+            store.set(lines.joined(separator: "\n"), forKey: key)
+        }
+        print(value)
+    }
 }
 
 struct TicketTask: Codable {
@@ -906,7 +928,7 @@ struct BudgetView: View {
                     if let metric { proxy.scrollTo(metric) }
                 }
                 }
-                .frame(width: columnWidth, alignment: .topLeading)
+                .frame(width: focus == nil ? columnWidth * 2 / 3 : columnWidth, alignment: .topLeading)
                 }
                 if focus == nil { Divider() }
                 if focus != .budget {
@@ -914,6 +936,8 @@ struct BudgetView: View {
                 ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if let ticket = scenario.ticket {
+                        if focus != .progress {
+                        VStack(alignment: .leading, spacing: 12) {
                         Text(ticket.title).font(.system(size: 33, weight: .bold)).lineLimit(2)
                         Text(ticket.key + (ticket.storyPoints.map { "  ·  \($0) Story Points" } ?? ""))
                             .foregroundStyle(.secondary)
@@ -949,11 +973,21 @@ struct BudgetView: View {
                         if focus == nil {
                         Text("Remarks").font(.system(size: 19, weight: .semibold))
                         Text(ticket.remarks ?? "—").font(.system(size: 17)).textSelection(.enabled)
-                        Text("Pull Requests").font(.headline)
-                        TextField("One PR URL per line", text: storyLinks(ticket.key, field: "prs"), axis: .vertical)
-                        Text("Chats").font(.headline)
-                        TextField("ChatGPT links", text: storyLinks(ticket.key, field: "chats"), axis: .vertical)
-                        TextField("Codex session IDs", text: storyLinks(ticket.key, field: "codex"), axis: .vertical)
+                        }
+                        }
+                        .modifier(ReportSection(tint: .cyan))
+                        }
+                        if focus == nil {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("References").font(.headline)
+                                ForEach([("Pull Requests", "prs"), ("ChatGPT", "chats"),
+                                          ("Codex", "codex"), ("Worktrees", "worktrees")], id: \.1) { label, field in
+                                    Text(label).fontWeight(.semibold)
+                                    TextField("One reference per line", text: storyLinks(ticket.key, field: field), axis: .vertical)
+                                        .id(ticket.key + field)
+                                }
+                            }
+                            .modifier(ReportSection(tint: .purple))
                         }
                 if focus == .progress {
                     HStack(alignment: .top, spacing: 24) {
@@ -970,8 +1004,10 @@ struct BudgetView: View {
                             .padding(.top, 12)
                         }
                     }
+                    .modifier(ReportSection(tint: .blue))
                 } else if focus == nil {
-                    progressTable(tasks, showDivider: true)
+                    progressTable(tasks, showDivider: false)
+                        .modifier(ReportSection(tint: .blue))
                 }
                     } else {
                         Text(scenario.ticketReadError ?? "Loading ticket…")
@@ -986,7 +1022,7 @@ struct BudgetView: View {
                     if let id { proxy.scrollTo(id) }
                 }
                 }
-                .frame(width: columnWidth, alignment: .topLeading)
+                .frame(width: focus == nil ? columnWidth * 4 / 3 : columnWidth, alignment: .topLeading)
                 }
                 }
                 .frame(maxWidth: .infinity)
@@ -1018,11 +1054,11 @@ struct BudgetView: View {
             let target = scenario.pointTarget > 0 ? scenario.pointTarget : scenario.ticket?.target ?? 4
             let capacity = scenario.ticket?.capacity ?? LocalTicket.available - 480
             VStack(alignment: .leading, spacing: 14) {
-                Stepper("SP/5D   \(target)", value: Binding(
+                Stepper("Story point target per sprint   \(target)", value: Binding(
                     get: { target }, set: scenario.setPointTarget
                 ), in: 1...1000)
-                Text("H/5D   " + clock(capacity))
-                Text("H/SP   " + clock(Int((Double(capacity) / Double(target)).rounded())))
+                Text("Hours available for ticket work per five-day sprint   " + clock(capacity))
+                Text("Hours available per story point   " + clock(Int((Double(capacity) / Double(target)).rounded())))
                 Divider()
                 Text("Jira Base URL")
                 TextField("https://jira.example.com", text: $scenario.jiraURL)
@@ -1034,7 +1070,7 @@ struct BudgetView: View {
     }
 
     private func storyLinks(_ key: String, field: String) -> Binding<String> {
-        let storageKey = "story.\(key).\(field)"
+        let storageKey = SprintPreferences.referenceKey(key, field)
         return Binding(get: { SprintPreferences.store.string(forKey: storageKey) ?? "" },
                        set: { SprintPreferences.store.set($0, forKey: storageKey) })
     }
@@ -1138,7 +1174,14 @@ struct BudgetView: View {
                 let name = $0.lastPathComponent.lowercased()
                 return name == key || name.hasPrefix(key + "-")
             }
-            let trees = matches.flatMap { directories(in: $0) }.filter {
+            let configured = storyLinks(story.key, field: "worktrees").wrappedValue.split(whereSeparator: \.isNewline)
+                .compactMap { line -> URL? in
+                    let path = NSString(string: String(line)).expandingTildeInPath
+                    guard path.hasPrefix("/") else { return nil }
+                    let url = URL(fileURLWithPath: path)
+                    return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true ? url : nil
+                }
+            let trees = configured + matches.flatMap { directories(in: $0) }.filter {
                 ["worktrees", "work trees"].contains($0.lastPathComponent.lowercased())
             }.flatMap { directories(in: $0) }
             let unique = trees.reduce(into: [URL]()) { result, tree in
@@ -2629,7 +2672,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 if CommandLine.arguments.count > 1 {
     do {
         let args = Array(CommandLine.arguments.dropFirst())
-        if let command = args.first, ["unplanned-list", "unplanned-add", "unplanned-edit"].contains(command) {
+        if args.first == "reference-add" {
+            try SprintPreferences.addReference(args)
+        } else if let command = args.first, ["unplanned-list", "unplanned-add", "unplanned-edit"].contains(command) {
             try UnplannedStore.cli(command)
         } else {
             try TicketStore.cli(args)

@@ -106,6 +106,13 @@ def main():
         command.add_argument("--status", choices=("open", "in-progress", "completed"))
         output(command)
 
+    reference = groups.add_parser("reference", help="Manage references attached to a story")
+    reference_actions = reference.add_subparsers(dest="action", required=True)
+    add_reference = reference_actions.add_parser("add", help="Append one reference")
+    add_reference.add_argument("kind", choices=("pr", "chatgpt", "codex", "worktree"))
+    add_reference.add_argument("value")
+    output(add_reference)
+
     args = vars(parser.parse_args())
     group, action, as_json = (args.pop(name) for name in ("group", "action", "json"))
     target = args.pop("ticket")
@@ -135,6 +142,20 @@ def main():
             raise SystemExit(result.returncode)
         return json.loads(result.stdout)
 
+    if group == "reference":
+        if not target:
+            parser.error("reference add requires --ticket KEY")
+        field = {"pr": "prs", "chatgpt": "chats", "codex": "codex", "worktree": "worktrees"}[fields["kind"]]
+        try:
+            result = subprocess.run([binary, "reference-add", target, field, fields["value"]],
+                                    text=True, stdout=subprocess.PIPE, check=False)
+        except OSError as error:
+            parser.exit(1, f"sprint: {error}\n")
+        if result.returncode:
+            raise SystemExit(result.returncode)
+        value = result.stdout.strip()
+        print(json.dumps({"ticket": target, "kind": fields["kind"], "value": value}) if as_json else value)
+        return
     if group == "unplanned":
         if target:
             parser.error("unplanned work has its own IDs and does not accept --ticket")
