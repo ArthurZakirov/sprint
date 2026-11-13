@@ -1448,7 +1448,7 @@ struct BudgetView: View {
         let current = budget.firstIndex { $0 == scenario.selectedBudget }
             ?? scenario.selectedCriterion.map { $0 + budget.count }
             ?? tasks.firstIndex { $0.id == scenario.selectedTask }.map { $0 + budget.count + criteriaCount }
-        let next = current.map { min(max($0 + step, 0), count - 1) }
+        let next = current.map { ($0 + step + count) % count }
             ?? (step > 0 ? 0 : count - 1)
         scenario.taskDetailsID = nil
         let detailIndex = next - budget.count
