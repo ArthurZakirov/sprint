@@ -1043,7 +1043,7 @@ struct BudgetView: View {
         if let trees = scenario.actionWorktrees {
             return ["Open All Worktrees"] + trees.map(\.lastPathComponent)
         }
-        return ["Open in Jira", "Open PRs in Chrome", "Open Worktrees", "Open in ChatGPT · planned", "Open in Codex · planned"]
+        return ["J  Open in Jira", "P  Open PRs in Chrome", "V  Open Worktrees in VS Code", "G  Open in ChatGPT", "W  Resume Codex in Warp"]
     }
 
     private func webURL(_ raw: String) -> URL? {
@@ -1079,6 +1079,11 @@ struct BudgetView: View {
     func handleStoryActionKey(_ key: Int) -> Bool {
         guard scenario.mode == .ticket, let story = scenario.ticket else { return false }
         if let index = scenario.actionIndex {
+            let shortcuts = [kVK_ANSI_J, kVK_ANSI_P, kVK_ANSI_V, kVK_ANSI_G, kVK_ANSI_W]
+            if scenario.actionWorktrees == nil, let row = shortcuts.firstIndex(of: key) {
+                performStoryAction(row, story: story)
+                return true
+            }
             let count = storyActionLabels.count
             switch key {
             case kVK_UpArrow: scenario.actionIndex = (index + count - 1) % count
@@ -1144,7 +1149,45 @@ struct BudgetView: View {
             guard !unique.isEmpty else { scenario.actionMessage = "No worktrees found in the Tickets folder."; return }
             scenario.actionWorktrees = unique
             scenario.actionIndex = 0
-        default: scenario.actionMessage = "Chat launch is not configured yet."
+        case 3:
+            let links = storyLinks(story.key, field: "chats").wrappedValue.split(whereSeparator: \.isNewline)
+            guard let url = links.lazy.compactMap({ webURL(String($0)) }).first(where: {
+                $0.scheme == "https" && ["chatgpt.com", "chat.openai.com"].contains($0.host?.lowercased() ?? "")
+            }) else {
+                scenario.actionMessage = "Add a ChatGPT conversation URL to the story first."
+                return
+            }
+            openStoryURLs([url], bundle: "com.openai.codex")
+        case 4:
+            let ids = storyLinks(story.key, field: "codex").wrappedValue.split(whereSeparator: \.isWhitespace)
+            guard let id = ids.first.flatMap({ UUID(uuidString: String($0)) }) else {
+                scenario.actionMessage = "Add a Codex session ID to the story first."
+                return
+            }
+            let helper = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hammerspoon/bin/codex_resume_warp")
+            guard FileManager.default.isExecutableFile(atPath: helper.path) else {
+                scenario.actionMessage = "The Codex Warp launcher is missing."
+                return
+            }
+            let process = Process()
+            process.executableURL = helper
+            process.arguments = ["--session-id", id.uuidString.lowercased()]
+            process.terminationHandler = { result in
+                guard result.terminationStatus != 0 else { return }
+                DispatchQueue.main.async {
+                    self.scenario.actionMessage = "Could not resume the Codex session in Warp."
+                    if self.scenario.ticket?.key == story.key && self.scenario.mode == .ticket {
+                        self.scenario.actionIndex = 4
+                    }
+                }
+            }
+            do {
+                try process.run()
+                scenario.actionIndex = nil
+            } catch {
+                scenario.actionMessage = "Could not start the Codex Warp launcher."
+            }
+        default: break
         }
     }
 
