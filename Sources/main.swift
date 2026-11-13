@@ -1388,6 +1388,15 @@ struct BudgetView: View {
         .padding(.vertical, 2)
     }
 
+    func toggleSelectedTaskDetails() -> Bool {
+        guard scenario.mode == .ticket, !scenario.showingStories,
+              let id = scenario.selectedTask, currentTasks.contains(where: { $0.id == id }) else {
+            return false
+        }
+        scenario.taskDetailsID = scenario.taskDetailsID == id ? nil : id
+        return true
+    }
+
     func moveSelection(by step: Int) {
         guard scenario.mode == .ticket else { return }
         let tasks = currentTasks
@@ -1395,6 +1404,7 @@ struct BudgetView: View {
         let current = tasks.firstIndex { $0.id == scenario.selectedTask }
         let next = current.map { min(max($0 + step, 0), tasks.count - 1) }
             ?? (step > 0 ? 0 : tasks.count - 1)
+        scenario.taskDetailsID = nil
         scenario.selectedTask = tasks[next].id
     }
 
@@ -1775,6 +1785,7 @@ final class BudgetWindow: NSWindow {
     var moveSelection: ((Int) -> Void)?
     var switchTab: ((Int) -> Void)?
     var copyStoryKey: (() -> Bool)?
+    var toggleTaskDetails: (() -> Bool)?
 
     override func sendEvent(_ event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
@@ -1795,6 +1806,8 @@ final class BudgetWindow: NSWindow {
             switch Int(event.keyCode) {
             case kVK_Return, kVK_ANSI_KeypadEnter:
                 if copyStoryKey?() == true { return }
+            case kVK_Space:
+                if !(firstResponder is NSTextView), !event.isARepeat, toggleTaskDetails?() == true { return }
             case kVK_UpArrow:
                 if !(firstResponder is NSTextView) { moveSelection?(-1); return }
             case kVK_DownArrow:
@@ -1838,6 +1851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return clipboard.setString(key, forType: .string)
         }
         panel.moveSelection = budgetView.moveSelection
+        panel.toggleTaskDetails = budgetView.toggleSelectedTaskDetails
         panel.isEditing = { budgetView.scenario.editingTask != nil }
         panel.cancelEdit = budgetView.cancelEdit
         let container = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
