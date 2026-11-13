@@ -489,6 +489,7 @@ struct UnplannedItem: Codable, Identifiable {
     var title: String
     var description: String
     var status: Status
+    var completedAt: Date? = nil
 }
 
 enum UnplannedStore {
@@ -506,7 +507,7 @@ enum UnplannedStore {
             items[index] = item
         } else {
             items.append(UnplannedItem(id: (items.map(\.id).max() ?? 0) + 1, date: item.date,
-                                       title: item.title, description: item.description, status: item.status))
+                                       title: item.title, description: item.description, status: item.status, completedAt: item.completedAt))
         }
         try JSONEncoder().encode(items).write(to: file, options: .atomic)
         return items.sorted { $0.date == $1.date ? $0.id > $1.id : $0.date > $1.date }
@@ -648,6 +649,10 @@ final class Scenario: ObservableObject {
         guard var draft = unplannedDraft else { return }
         draft.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !draft.title.isEmpty else { return }
+        let previous = unplannedItems.first { $0.id == draft.id }
+        draft.completedAt = draft.status == .completed
+            ? (previous?.status == .completed ? previous?.completedAt ?? previous?.date : .now)
+            : nil
         do {
             unplannedItems = try UnplannedStore.save(draft)
             selectedUnplanned = draft.id == 0 ? unplannedItems.map(\.id).max() : draft.id
@@ -718,9 +723,9 @@ final class Scenario: ObservableObject {
     @Published var invalidDuration = false
 }
 
-struct ReportRowID: Hashable {
-    let story: String
-    let task: String
+enum ReportRowID: Hashable {
+    case jira(story: String, task: String)
+    case unplanned(Int)
 }
 
 struct BudgetView: View {
@@ -1039,6 +1044,47 @@ struct BudgetView: View {
         }.sorted { ($0.date ?? now) < ($1.date ?? now) }
     }
 
+    private func dailyUnplannedItems() -> [UnplannedItem] {
+        let period = reportPeriod(weekly: false)
+        return scenario.unplannedItems.filter { item in
+            let completed = item.completedAt ?? item.date
+            return item.status == .completed && completed >= period.start
+                && completed < period.end && completed <= period.now
+        }.sorted {
+            let left = $0.completedAt ?? $0.date
+            let right = $1.completedAt ?? $1.date
+            return left == right ? $0.id > $1.id : left > right
+        }
+    }
+
+    private func dailyUnplannedList() -> some View {
+        let items = dailyUnplannedItems()
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Unplanned Work").font(.headline)
+            if let error = scenario.unplannedError { Text(error).foregroundStyle(.orange) }
+            if items.isEmpty { Text("—").foregroundStyle(.secondary) }
+            ForEach(items) { item in
+                let id = ReportRowID.unplanned(item.id)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("U-\(item.id)").monospacedDigit().foregroundStyle(.secondary)
+                    Text(item.title).fontWeight(.semibold)
+                    if scenario.selectedReportRow == id, !item.description.isEmpty {
+                        Text(item.description).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+                .background {
+                    if scenario.selectedReportRow == id {
+                        RoundedRectangle(cornerRadius: 5).fill(Color.blue.opacity(0.32))
+                    }
+                }
+                .id(id)
+            }
+        }
+        .modifier(ReportSection(tint: .cyan))
+    }
+
     private func dailyView() -> some View {
         let period = reportPeriod(weekly: false)
         let formatter = DateFormatter()
@@ -1053,7 +1099,11 @@ struct BudgetView: View {
                 Spacer()
                 Text("⌃⇧Tab / ⌃Tab").foregroundStyle(.secondary)
             }
-            taskActivity(weekly: false)
+            HStack(alignment: .top, spacing: 24) {
+                dailyUnplannedList()
+                    .frame(width: 245, alignment: .leading)
+                taskActivity(weekly: false)
+            }
         }
     }
 
@@ -1230,7 +1280,7 @@ struct BudgetView: View {
                                 reportTableRow(title: "Task / Progress", status: "Status", spent: "Spent", heading: true)
                                 Divider()
                                 ForEach(group.rows) { row in
-                                    let id = ReportRowID(story: group.story.key, task: row.id)
+                                    let id = ReportRowID.jira(story: group.story.key, task: row.id)
                                     reportTableRow(title: row.task.title, status: row.task.status,
                                                    spent: clock(row.spent), notes: row.notes)
                                         .background {
@@ -1630,10 +1680,11 @@ struct BudgetView: View {
             return
         }
         if scenario.mode == .daily || scenario.mode == .planning {
-            let ids = reportGroups(weekly: scenario.mode == .planning).flatMap { group in
-                group.rows.map { ReportRowID(story: group.story.key, task: $0.id) }
+            let jiraIDs = reportGroups(weekly: scenario.mode == .planning).flatMap { group in
+                group.rows.map { ReportRowID.jira(story: group.story.key, task: $0.id) }
             }
-            scenario.selectedReportRow = nextSelection(ids, selected: scenario.selectedReportRow, step: step)
+            let unplannedIDs = scenario.mode == .daily ? dailyUnplannedItems().map { ReportRowID.unplanned($0.id) } : []
+            scenario.selectedReportRow = nextSelection(unplannedIDs + jiraIDs, selected: scenario.selectedReportRow, step: step)
             return
         }
         guard scenario.mode == .ticket else { return }
@@ -2209,7 +2260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let window, let scenario else { return }
         if mode == .daily { scenario.dailyOffset = 0 }
         scenario.selectedReportRow = nil
-        if mode == .unplanned { scenario.reloadUnplanned() }
+        if mode == .unplanned || mode == .daily { scenario.reloadUnplanned() }
         scenario.reloadTicket(preferActive: mode == .ticket)
         if mode != .ticket { scenario.reloadNotes() }
         if scenario.mode != mode {
