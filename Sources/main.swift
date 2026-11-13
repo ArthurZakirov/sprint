@@ -948,25 +948,23 @@ struct BudgetView: View {
                         Text("Remarks").font(.system(size: 19, weight: .semibold))
                         Text(ticket.remarks ?? "—").font(.system(size: 17)).textSelection(.enabled)
                         }
-                if focus != .criteria {
-                VStack(alignment: .leading, spacing: 10) {
-                    if focus == nil { Divider().padding(.bottom, 6) }
-                    Text("Progress").font(.system(size: 19, weight: .semibold))
-                    HStack {
-                        Text("Estimate").frame(width: 70)
-                        Text("Spent").frame(width: 70)
-                        Text("Task").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        statusColumn()
-                        timingColumns(showDuration: false)
-                        Color.clear.frame(width: 74, height: 1)
+                if focus == .progress {
+                    HStack(alignment: .top, spacing: 24) {
+                        progressTable(tasks, showDivider: false)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if let task = tasks.first(where: { $0.id == scenario.selectedTask }) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text(task.title).font(.title2.bold())
+                                Text(task.description.flatMap { $0.isEmpty ? nil : $0 } ?? "No description yet.")
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(width: 275, alignment: .leading)
+                            .padding(.top, 12)
+                        }
                     }
-                    .padding(.horizontal, 6)
-                    ForEach(tasks, id: \.id) { task in
-                        item(task).id(task.id)
-                    }
-                }
-                .padding(.top, 12)
+                } else if focus == nil {
+                    progressTable(tasks, showDivider: true)
                 }
                     } else {
                         Text(scenario.ticketReadError ?? "Loading ticket…")
@@ -1001,6 +999,27 @@ struct BudgetView: View {
             .preferredColorScheme(.dark)
             }
         }
+    }
+
+    private func progressTable(_ tasks: [TicketTask], showDivider: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if showDivider { Divider().padding(.bottom, 6) }
+            Text("Progress").font(.system(size: 19, weight: .semibold))
+            HStack {
+                Text("Estimate").frame(width: 70)
+                Text("Spent").frame(width: 70)
+                Text("Task").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                statusColumn()
+                timingColumns(showDuration: false)
+                Color.clear.frame(width: 74, height: 1)
+            }
+            .padding(.horizontal, 6)
+            ForEach(tasks, id: \.id) { task in
+                item(task).id(task.id)
+            }
+        }
+        .padding(.top, 12)
     }
 
     private var storyBar: some View {
@@ -1741,7 +1760,7 @@ struct BudgetView: View {
             }
             return true
         }
-        guard let id = scenario.selectedTask, currentTasks.contains(where: { $0.id == id }) else {
+        guard scenario.storyFocus != .progress, let id = scenario.selectedTask, currentTasks.contains(where: { $0.id == id }) else {
             return false
         }
         scenario.taskDetailsID = scenario.taskDetailsID == id ? nil : id
@@ -2067,7 +2086,7 @@ struct BudgetView: View {
                 scenario.selectedBudget = nil
                 scenario.selectedCriterion = nil
                 scenario.selectedTask = task.id
-                scenario.taskDetailsID = task.id
+                scenario.taskDetailsID = scenario.storyFocus == .progress ? nil : task.id
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
