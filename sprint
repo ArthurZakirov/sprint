@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Command-line interface to the local Time Budget store."""
+"""Command-line interface to the local Sprint store."""
 import argparse
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -9,7 +9,7 @@ import subprocess
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Manage the local Time Budget ticket.")
+    parser = argparse.ArgumentParser(description="Manage the local Sprint ticket.")
     parser.add_argument("--ticket", help="Target a local story by key")
     groups = parser.add_subparsers(dest="group", required=True)
     ticket = groups.add_parser("ticket", help="View or edit the active ticket")
@@ -106,7 +106,7 @@ def main():
                 parser.error("use either a planning status or --include/--exclude")
             fields["included"] = status == "planned"
 
-    binary = Path.home() / "Applications/Zeitkonto.app/Contents/MacOS/Zeitkonto"
+    binary = Path.home() / "Applications/Sprint.app/Contents/MacOS/Sprint"
 
     def run(command, payload=None):
         try:

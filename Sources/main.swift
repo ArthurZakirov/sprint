@@ -249,7 +249,7 @@ enum TicketStore {
     }
 
     static func failure(_ message: String) -> NSError {
-        NSError(domain: "Time Budget", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        NSError(domain: "Sprint", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     static func cli(_ args: [String]) throws {
@@ -1193,7 +1193,6 @@ struct BudgetView: View {
                                             @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Label("Time Budget", systemImage: "clock").font(.system(size: 19, weight: .semibold))
                 Spacer()
                 Button(action: dismiss) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless).accessibilityLabel("Close window")
@@ -1778,7 +1777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  styleMask: [.titled, .fullSizeContentView],
                                  backing: .buffered, defer: false)
         panel.acceptsMouseMovedEvents = true
-        panel.title = "Time Budget"
+        panel.title = "Sprint"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = false
@@ -1811,7 +1810,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window = panel
 
         let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        status.button?.image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Time Budget")
+        status.button?.image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Sprint")
         let menu = NSMenu()
         for mode in BudgetMode.allCases {
             let item = menu.addItem(withTitle: mode.title + "  ⌥" + mode.key.letter,
@@ -1820,7 +1819,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.target = self
         }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Time Budget", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Sprint", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         status.menu = menu
         menuItem = status
 
@@ -1859,8 +1858,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             unavailable.append("⌥W")
         }
-        status.button?.toolTip = unavailable.isEmpty ? "Time Budget" : "Unavailable: " + unavailable.joined(separator: ", ")
-        NSLog("Time Budget registered %d of 4 shortcuts", shortcuts.count)
+        status.button?.toolTip = unavailable.isEmpty ? "Sprint" : "Unavailable: " + unavailable.joined(separator: ", ")
+        NSLog("Sprint registered %d of 4 shortcuts", shortcuts.count)
         toggle(.ticket)
     }
 

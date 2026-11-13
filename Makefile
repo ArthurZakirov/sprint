@@ -1,5 +1,5 @@
-APP := build/Zeitkonto.app
-BIN := $(APP)/Contents/MacOS/Zeitkonto
+APP := build/Sprint.app
+BIN := $(APP)/Contents/MacOS/Sprint
 
 .PHONY: build install
 build: $(BIN)
@@ -13,5 +13,5 @@ $(BIN): Sources/main.swift Info.plist
 
 install: build
 	mkdir -p "$(HOME)/Applications" "$(HOME)/.local/bin"
-	ditto "$(APP)" "$(HOME)/Applications/Zeitkonto.app"
+	ditto "$(APP)" "$(HOME)/Applications/Sprint.app"
 	install -m 755 sprint "$(HOME)/.local/bin/sprint"

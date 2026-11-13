@@ -1,4 +1,4 @@
-# Time Budget
+# Sprint
 
 A local macOS app and CLI for deciding what fits in a sprint and preparing standup and planning updates.
 
@@ -8,7 +8,7 @@ Requires macOS, the Xcode command-line tools, and Python 3 for the CLI.
 
 ```sh
 make install
-open ~/Applications/Zeitkonto.app
+open ~/Applications/Sprint.app
 ```
 
 Add `~/.local/bin` to your PATH if `sprint` is unavailable. Quit a running copy before reinstalling.
