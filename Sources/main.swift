@@ -23,6 +23,7 @@ enum BudgetMode: UInt32, CaseIterable {
 }
 
 struct TicketTask: Codable {
+    var description: String? = nil
     var id: String
     var title: String
     var minutes: Int
@@ -399,6 +400,7 @@ enum TicketStore {
                     struct Patch: Decodable {
                         let id: String
                         let title: String?
+                        let description: String?
                         let minutes: Int?
                         let spentMinutes: Int?
                         let done: Bool?
@@ -415,6 +417,7 @@ enum TicketStore {
                     }
                     task.startedAt = patch.startedAt ?? task.startedAt
                     task.title = patch.title ?? task.title
+                    task.description = patch.description ?? task.description
                     task.minutes = patch.minutes ?? task.minutes
                     task.done = patch.done ?? task.done
                     if task.done {
@@ -577,6 +580,7 @@ final class Scenario: ObservableObject {
     }
     @Published var expandedComments: Set<String> = []
     @Published var selectedTask: String?
+    @Published var taskDetailsID: String?
     @Published var ticket: LocalTicket?
     @Published var ticketReadError: String?
 
@@ -598,6 +602,7 @@ final class Scenario: ObservableObject {
         if ticket?.key != entry.ticket.key {
             editingTask = nil
             selectedTask = nil
+            taskDetailsID = nil
             expandedComments = []
         }
         ticketURL = entry.url
@@ -1659,6 +1664,7 @@ struct BudgetView: View {
                 .help(spent > task.minutes ? "Above estimate by " + clock(spent - task.minutes) : "Time spent")
             Button {
                 scenario.selectedTask = task.id
+                scenario.taskDetailsID = task.id
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
@@ -1671,6 +1677,26 @@ struct BudgetView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help("Show task details")
+            .popover(isPresented: Binding(
+                get: { scenario.taskDetailsID == task.id },
+                set: { if !$0 && scenario.taskDetailsID == task.id { scenario.taskDetailsID = nil } }
+            )) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(task.title)
+                        .font(.title2.bold())
+                    ScrollView {
+                        let description = task.description ?? ""
+                        Text(description.isEmpty ? "No description yet." : description)
+                            .foregroundStyle(description.isEmpty ? Color.secondary : Color.primary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 200)
+                }
+                .padding(20)
+                .frame(width: 460, alignment: .leading)
+            }
             statusColumn(task)
             taskInput(task, field: "Started", value: timestamp(task.startedAt), width: 108)
             taskInput(task, field: "Finished", value: timestamp(task.completedAt), width: 108)

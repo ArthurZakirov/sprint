@@ -40,6 +40,7 @@ def main():
         command = tasks.add_parser(action)
         command.add_argument("id")
         command.add_argument("--title", required=action == "add")
+        command.add_argument("--description", help="Task details")
         command.add_argument("--minutes", "--estimate-minutes", type=int, required=action == "add")
         if action == "edit":
             command.add_argument("--spent-minutes", dest="spentMinutes", type=int)
