@@ -655,6 +655,8 @@ enum ReportNotes {
 
 }
 
+enum StoryFocus { case criteria, budget, progress }
+
 final class Scenario: ObservableObject {
     @Published var speakingNotes: [String: String] = [:]
     @Published var notesError: String?
@@ -720,6 +722,7 @@ final class Scenario: ObservableObject {
         }
     }
 
+    @Published var storyFocus: StoryFocus?
     @Published var selectedBudget: String?
     @Published var selectedCriterion: Int?
     @Published var expandedComments: Set<String> = []
@@ -771,6 +774,7 @@ final class Scenario: ObservableObject {
         guard mode == .ticket, let key = ticket?.key else { return }
         let keys = TicketStore.registry().map(\.ticket.key)
         guard keys.count > 1, let index = keys.firstIndex(of: key) else { return }
+        storyFocus = nil
         reloadTicket(key: keys[(index + step + keys.count) % keys.count])
     }
 
@@ -818,8 +822,10 @@ struct BudgetView: View {
                     Rectangle().fill(.white.opacity(0.24)).frame(height: 1)
                 }
                 GeometryReader { layout in
-                let columnWidth = max(1, (layout.size.width - 65) / 2)
+                let focus = scenario.storyFocus
+                let columnWidth = focus == nil ? max(1, (layout.size.width - 65) / 2) : min(layout.size.width, 1050)
                 HStack(alignment: .top, spacing: 32) {
+                if focus == nil || focus == .budget {
                 ScrollViewReader { proxy in
                 ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
@@ -899,7 +905,9 @@ struct BudgetView: View {
                 }
                 }
                 .frame(width: columnWidth, alignment: .topLeading)
-                Divider()
+                }
+                if focus == nil { Divider() }
+                if focus != .budget {
                 ScrollViewReader { proxy in
                 ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -907,8 +915,11 @@ struct BudgetView: View {
                         Text(ticket.title).font(.system(size: 33, weight: .bold)).lineLimit(2)
                         Text(ticket.key + (ticket.storyPoints.map { "  ·  \($0) Story Points" } ?? ""))
                             .foregroundStyle(.secondary)
+                        if focus == nil {
                         Text("Why").font(.system(size: 19, weight: .semibold))
                         Text(ticket.why ?? ticket.description ?? "—").font(.system(size: 17)).textSelection(.enabled)
+                        }
+                        if focus != .progress {
                         HStack {
                             Text("Acceptance Criteria").font(.system(size: 19, weight: .semibold))
                             Spacer()
@@ -932,10 +943,14 @@ struct BudgetView: View {
                             Text("Comments on changed criteria").font(.system(size: 15, weight: .semibold))
                             ForEach(unmatched) { comment in commentCard(comment) }
                         }
+                        }
+                        if focus == nil {
                         Text("Remarks").font(.system(size: 19, weight: .semibold))
                         Text(ticket.remarks ?? "—").font(.system(size: 17)).textSelection(.enabled)
+                        }
+                if focus != .criteria {
                 VStack(alignment: .leading, spacing: 10) {
-                    Divider().padding(.bottom, 6)
+                    if focus == nil { Divider().padding(.bottom, 6) }
                     Text("Progress").font(.system(size: 19, weight: .semibold))
                     HStack {
                         Text("Estimate").frame(width: 70)
@@ -952,6 +967,7 @@ struct BudgetView: View {
                     }
                 }
                 .padding(.top, 12)
+                }
                     } else {
                         Text(scenario.ticketReadError ?? "Loading ticket…")
                             .font(.system(size: 17)).foregroundStyle(.orange)
@@ -968,10 +984,12 @@ struct BudgetView: View {
                 .frame(width: columnWidth, alignment: .topLeading)
                 }
                 }
+                .frame(maxWidth: .infinity)
+                }
                 Spacer(minLength: 0)
                 HStack {
                     Spacer()
-                    Text("↩  Copy story key    ⌥ J  Toggle    Esc  Close")
+                    Text("A  Criteria    T  Budget    P  Progress    ↩  Copy story key    ⌥ J  Toggle    Esc  Back / Close")
                         .font(.system(size: 15)).foregroundStyle(.secondary)
                 }
             }
@@ -994,7 +1012,10 @@ struct BudgetView: View {
                 HStack {
                     ForEach(visible, id: \.key) { story in
                         let key = story.key
-                            Button { scenario.reloadTicket(key: key) } label: {
+                            Button {
+                                scenario.storyFocus = nil
+                                scenario.reloadTicket(key: key)
+                            } label: {
                                 storyTabLabel(story)
                             }
                                 .buttonStyle(.plain)
@@ -1750,10 +1771,11 @@ struct BudgetView: View {
             return
         }
         guard scenario.mode == .ticket else { return }
-        let tasks = currentTasks
-        let criteriaCount = scenario.ticket?.acceptanceCriteria.count ?? 0
+        let focus = scenario.storyFocus
+        let tasks = focus == nil || focus == .progress ? currentTasks : []
+        let criteriaCount = focus == nil || focus == .criteria ? scenario.ticket?.acceptanceCriteria.count ?? 0 : 0
         let budget: [String]
-        if let ticket = scenario.ticket {
+        if (focus == nil || focus == .budget), let ticket = scenario.ticket {
             budget = ticket.stage == "done"
                 ? ["Planned", "Spent", ticket.remaining < 0 ? "Overrun" : "Unused Budget"]
                 : ["Planned", "Spent", "Remaining budget", "Remaining effort",
@@ -1764,7 +1786,7 @@ struct BudgetView: View {
         let count = budget.count + criteriaCount + tasks.count
         guard count > 0 else { return }
         let current = budget.firstIndex { $0 == scenario.selectedBudget }
-            ?? scenario.selectedCriterion.map { $0 + budget.count }
+            ?? scenario.selectedCriterion.flatMap { (0..<criteriaCount).contains($0) ? $0 + budget.count : nil }
             ?? tasks.firstIndex { $0.id == scenario.selectedTask }.map { $0 + budget.count + criteriaCount }
         let next = current.map { ($0 + step + count) % count }
             ?? (step > 0 ? 0 : count - 1)
@@ -2157,6 +2179,7 @@ final class BudgetWindow: NSWindow {
     var switchTab: ((Int) -> Void)?
     var switchMode: ((Int) -> Void)?
     var copyStoryKey: (() -> Bool)?
+    var storyFocusKey: ((Int) -> Bool)?
     var toggleTaskDetails: (() -> Bool)?
 
     override func sendEvent(_ event: NSEvent) {
@@ -2175,6 +2198,7 @@ final class BudgetWindow: NSWindow {
                 super.sendEvent(event)
                 return
             }
+            if !(firstResponder is NSTextView), storyFocusKey?(Int(event.keyCode)) == true { return }
             switch Int(event.keyCode) {
             case kVK_Return, kVK_ANSI_KeypadEnter:
                 if copyStoryKey?() == true { return }
@@ -2235,6 +2259,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let clipboard = NSPasteboard.general
             clipboard.clearContents()
             return clipboard.setString(key, forType: .string)
+        }
+        panel.storyFocusKey = { key in
+            let scenario = budgetView.scenario
+            guard scenario.mode == .ticket else { return false }
+            let focus: StoryFocus?
+            switch key {
+            case kVK_ANSI_A: focus = .criteria
+            case kVK_ANSI_T: focus = .budget
+            case kVK_ANSI_P: focus = .progress
+            case kVK_Escape where scenario.storyFocus != nil: focus = nil
+            default: return false
+            }
+            let next = scenario.storyFocus == focus ? nil : focus
+            scenario.storyFocus = next
+            scenario.taskDetailsID = nil
+            scenario.selectedTask = nil
+            scenario.selectedCriterion = nil
+            scenario.selectedBudget = nil
+            if let ticket = scenario.ticket, next == nil || next == .budget {
+                scenario.selectedBudget = ticket.stage == "done"
+                    ? (ticket.remaining < 0 ? "Overrun" : "Unused Budget")
+                    : "Remaining budget"
+            } else if next != nil {
+                budgetView.moveSelection(by: 1)
+            }
+            return true
         }
         panel.moveSelection = budgetView.moveSelection
         panel.toggleTaskDetails = budgetView.toggleSelectedDetails
@@ -2320,6 +2370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func show(_ mode: BudgetMode) {
         guard let window, let scenario else { return }
+        scenario.storyFocus = nil
         if mode == .daily { scenario.dailyOffset = 0 }
         scenario.selectedReportRow = nil
         if mode == .unplanned || mode == .daily { scenario.reloadUnplanned() }
