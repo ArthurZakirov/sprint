@@ -493,25 +493,82 @@ struct UnplannedItem: Codable, Identifiable {
 }
 
 enum UnplannedStore {
-    static var file: URL { TicketStore.root.appendingPathComponent("unplanned-work.json") }
+    static var file: URL {
+        ProcessInfo.processInfo.environment["SPRINT_UNPLANNED_FILE"].map { URL(fileURLWithPath: $0) }
+            ?? TicketStore.root.appendingPathComponent("unplanned-work.json")
+    }
 
     static func read() throws -> [UnplannedItem] {
         do { return try JSONDecoder().decode([UnplannedItem].self, from: Data(contentsOf: file)) }
         catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
     }
 
-    static func save(_ item: UnplannedItem) throws -> [UnplannedItem] {
-        try FileManager.default.createDirectory(at: TicketStore.root, withIntermediateDirectories: true)
+    static func save(id: Int?, update: (inout UnplannedItem) -> Void) throws -> (items: [UnplannedItem], saved: UnplannedItem) {
+        let path = file
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let fd = Darwin.open(path.path + ".lock", O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw TicketStore.failure("Could not open unplanned work lock.") }
+        defer { Darwin.close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw TicketStore.failure("Could not lock unplanned work.") }
         var items = try read()
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index] = item
-        } else {
-            items.append(UnplannedItem(id: (items.map(\.id).max() ?? 0) + 1, date: item.date,
-                                       title: item.title, description: item.description, status: item.status, completedAt: item.completedAt))
-        }
-        try JSONEncoder().encode(items).write(to: file, options: .atomic)
-        return items.sorted { $0.date == $1.date ? $0.id > $1.id : $0.date > $1.date }
+        let index = items.firstIndex { $0.id == id }
+        if id != nil && index == nil { throw TicketStore.failure("Unknown unplanned work ID.") }
+        let previous = index.map { items[$0] }
+        var item = previous ?? UnplannedItem(id: (items.map(\.id).max() ?? 0) + 1, date: .now,
+                                             title: "", description: "", status: .open)
+        update(&item)
+        item.title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !item.title.isEmpty else { throw TicketStore.failure("Provide an item title.") }
+        item.completedAt = item.status == .completed
+            ? (previous?.status == .completed ? previous?.completedAt ?? previous?.date : .now)
+            : nil
+        if let index { items[index] = item }
+        else { items.append(item) }
+        try JSONEncoder().encode(items).write(to: path, options: .atomic)
+        return (sorted(items), item)
     }
+
+    static func sorted(_ items: [UnplannedItem]) -> [UnplannedItem] {
+        items.sorted { $0.date == $1.date ? $0.id > $1.id : $0.date > $1.date }
+    }
+
+    static func cli(_ command: String) throws {
+        struct Patch: Decodable {
+            let id: Int?
+            let title: String?
+            let description: String?
+            let date: String?
+            let status: UnplannedItem.Status?
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if command == "unplanned-list" {
+            print(String(decoding: try encoder.encode(sorted(read())), as: UTF8.self))
+            return
+        }
+        let patch = try JSONDecoder().decode(Patch.self, from: FileHandle.standardInput.readDataToEndOfFile())
+        guard command == "unplanned-add" ? patch.id == nil : patch.id != nil else {
+            throw TicketStore.failure("Provide an ID only when editing.")
+        }
+        let date: Date?
+        if let raw = patch.date {
+            let formatter = ISO8601DateFormatter()
+            guard let parsed = formatter.date(from: raw) else {
+                throw TicketStore.failure("Use an ISO 8601 date and time with an offset.")
+            }
+            date = parsed
+        } else {
+            date = nil
+        }
+        let result = try save(id: patch.id) { item in
+            item.title = patch.title ?? item.title
+            item.description = patch.description ?? item.description
+            item.date = date ?? item.date
+            item.status = patch.status ?? item.status
+        }
+        print(String(decoding: try encoder.encode(result.saved), as: UTF8.self))
+    }
+
 }
 
 enum ReportNotes {
@@ -646,16 +703,16 @@ final class Scenario: ObservableObject {
     }
 
     func saveUnplanned() {
-        guard var draft = unplannedDraft else { return }
-        draft.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !draft.title.isEmpty else { return }
-        let previous = unplannedItems.first { $0.id == draft.id }
-        draft.completedAt = draft.status == .completed
-            ? (previous?.status == .completed ? previous?.completedAt ?? previous?.date : .now)
-            : nil
+        guard let draft = unplannedDraft else { return }
         do {
-            unplannedItems = try UnplannedStore.save(draft)
-            selectedUnplanned = draft.id == 0 ? unplannedItems.map(\.id).max() : draft.id
+            let result = try UnplannedStore.save(id: draft.id == 0 ? nil : draft.id) { item in
+                item.title = draft.title
+                item.description = draft.description
+                item.date = draft.date
+                item.status = draft.status
+            }
+            unplannedItems = result.items
+            selectedUnplanned = result.saved.id
             unplannedDraft = nil
             unplannedError = nil
         } catch {
@@ -2283,7 +2340,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 if CommandLine.arguments.count > 1 {
     do {
-        try TicketStore.cli(Array(CommandLine.arguments.dropFirst()))
+        let args = Array(CommandLine.arguments.dropFirst())
+        if let command = args.first, ["unplanned-list", "unplanned-add", "unplanned-edit"].contains(command) {
+            try UnplannedStore.cli(command)
+        } else {
+            try TicketStore.cli(args)
+        }
         exit(0)
     } catch {
         FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))

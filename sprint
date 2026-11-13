@@ -93,13 +93,26 @@ def main():
             command.add_argument("--body", required=True)
         output(command)
 
+    unplanned = groups.add_parser("unplanned", help="Manage local unplanned work")
+    unplanned_actions = unplanned.add_subparsers(dest="action", required=True)
+    output(unplanned_actions.add_parser("list", help="List unplanned work and item IDs"))
+    for action in ("add", "edit"):
+        command = unplanned_actions.add_parser(action)
+        if action == "edit":
+            command.add_argument("id", help="Item ID, e.g. U-5")
+        command.add_argument("--title", required=action == "add")
+        command.add_argument("--description")
+        command.add_argument("--date", help="ISO 8601 date and time with an offset")
+        command.add_argument("--status", choices=("open", "in-progress", "completed"))
+        output(command)
+
     args = vars(parser.parse_args())
     group, action, as_json = (args.pop(name) for name in ("group", "action", "json"))
     target = args.pop("ticket")
     fields = {key: value for key, value in args.items() if value is not None}
     if "story_points" in fields:
         fields["storyPoints"] = fields.pop("story_points")
-    if "status" in fields:
+    if "status" in fields and group != "unplanned":
         status = fields.pop("status")
         if status in ("open", "done"):
             fields["done"] = status == "done"
@@ -122,6 +135,27 @@ def main():
             raise SystemExit(result.returncode)
         return json.loads(result.stdout)
 
+    if group == "unplanned":
+        if target:
+            parser.error("unplanned work has its own IDs and does not accept --ticket")
+        if action == "edit":
+            item_id = fields["id"].removeprefix("U-")
+            if not item_id.isascii() or not item_id.isdecimal() or int(item_id) <= 0:
+                parser.error("expected an unplanned work ID such as U-5")
+            if len(fields) == 1:
+                parser.error("unplanned edit requires at least one flag")
+            fields["id"] = int(item_id)
+        if "status" in fields:
+            fields["status"] = fields["status"].replace("-", " ").title()
+        result = run("unplanned-" + action, fields)
+        if as_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            for item in result if action == "list" else [result]:
+                print(f'U-{item["id"]}  {item["date"]}  [{item["status"]}]  {item["title"]}')
+                if item["description"]:
+                    print(item["description"])
+        return
     if group == "notes":
         if target:
             fields["ticket"] = target
