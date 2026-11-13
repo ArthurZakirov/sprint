@@ -883,7 +883,7 @@ struct BudgetView: View {
                 .frame(height: 24, alignment: .topLeading)
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Ticket Budget").font(.system(size: 19, weight: .semibold))
+                    Text("Ticket Budget").font(storyCardTitle)
                     if let error = scenario.ticketReadError {
                         Text(error).foregroundStyle(.orange).font(.system(size: 15))
                     }
@@ -917,7 +917,7 @@ struct BudgetView: View {
                 .frame(maxWidth: .infinity)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(minHeight: 680, alignment: .topLeading)
-                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+                .background(Self.storyCardBackground, in: RoundedRectangle(cornerRadius: 14))
 
 
 
@@ -938,16 +938,16 @@ struct BudgetView: View {
                     if let ticket = scenario.ticket {
                         if focus != .progress {
                         VStack(alignment: .leading, spacing: 12) {
-                        Text(ticket.title).font(.system(size: 33, weight: .bold)).lineLimit(2)
+                        Text(ticket.title).font(storyCardTitle).lineLimit(2)
                         Text(ticket.key + (ticket.storyPoints.map { "  ·  \($0) Story Points" } ?? ""))
                             .foregroundStyle(.secondary)
                         if focus == nil {
-                        Text("Why").font(.system(size: 19, weight: .semibold))
+                        Text("Why").font(.system(size: 16, weight: .semibold))
                         Text(ticket.why ?? ticket.description ?? "—").font(.system(size: 17)).textSelection(.enabled)
                         }
                         if focus != .progress {
                         HStack {
-                            Text("Acceptance Criteria").font(.system(size: 19, weight: .semibold))
+                            Text("Acceptance Criteria").font(.system(size: 16, weight: .semibold))
                             Spacer()
                             let ids = Set((ticket.criterionComments ?? []).map(\.id))
                             if !ids.isEmpty {
@@ -971,15 +971,15 @@ struct BudgetView: View {
                         }
                         }
                         if focus == nil {
-                        Text("Remarks").font(.system(size: 19, weight: .semibold))
+                        Text("Remarks").font(.system(size: 16, weight: .semibold))
                         Text(ticket.remarks ?? "—").font(.system(size: 17)).textSelection(.enabled)
                         }
                         }
-                        .modifier(ReportSection(tint: .cyan))
+                        .modifier(StoryCard())
                         }
                         if focus == nil {
                             VStack(alignment: .leading, spacing: 10) {
-                                Text("References").font(.headline)
+                                Text("References").font(storyCardTitle)
                                 ForEach([("Pull Requests", "prs"), ("ChatGPT", "chats"),
                                           ("Codex", "codex"), ("Worktrees", "worktrees")], id: \.1) { label, field in
                                     Text(label).fontWeight(.semibold)
@@ -987,7 +987,7 @@ struct BudgetView: View {
                                         .id(ticket.key + field)
                                 }
                             }
-                            .modifier(ReportSection(tint: .purple))
+                            .modifier(StoryCard())
                         }
                 if focus == .progress {
                     HStack(alignment: .top, spacing: 24) {
@@ -1004,10 +1004,10 @@ struct BudgetView: View {
                             .padding(.top, 12)
                         }
                     }
-                    .modifier(ReportSection(tint: .blue))
+                    .modifier(StoryCard())
                 } else if focus == nil {
                     progressTable(tasks, showDivider: false)
-                        .modifier(ReportSection(tint: .blue))
+                        .modifier(StoryCard())
                 }
                     } else {
                         Text(scenario.ticketReadError ?? "Loading ticket…")
@@ -1046,6 +1046,18 @@ struct BudgetView: View {
             }
             .preferredColorScheme(.dark)
             }
+        }
+    }
+
+    private let storyCardTitle = Font.system(size: 19, weight: .semibold)
+    private static let storyCardBackground = Color.white.opacity(0.07)
+
+    private struct StoryCard: ViewModifier {
+        func body(content: Content) -> some View {
+            content
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(BudgetView.storyCardBackground, in: RoundedRectangle(cornerRadius: 14))
         }
     }
 
@@ -1267,7 +1279,7 @@ struct BudgetView: View {
     private func progressTable(_ tasks: [TicketTask], showDivider: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if showDivider { Divider().padding(.bottom, 6) }
-            Text("Progress").font(.system(size: 19, weight: .semibold))
+            Text("Progress").font(storyCardTitle)
             HStack {
                 Text("Estimate").frame(width: 70)
                 Text("Spent").frame(width: 70)
