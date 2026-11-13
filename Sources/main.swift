@@ -3,9 +3,9 @@ import SwiftUI
 import Carbon
 
 enum BudgetMode: UInt32, CaseIterable {
-    case ticket = 1, daily, planning, unplanned
+    case ticket = 1, daily, planning, unplanned, settings = 6
 
-    static let navigation: [Self] = [.daily, .ticket, .unplanned, .planning]
+    static let navigation: [Self] = [.daily, .ticket, .unplanned, .planning, .settings]
 
     var title: String {
         switch self {
@@ -13,6 +13,7 @@ enum BudgetMode: UInt32, CaseIterable {
         case .daily: "Daily Standup"
         case .planning: "Planning"
         case .unplanned: "Unplanned Work"
+        case .settings: "Settings"
         }
     }
 
@@ -22,8 +23,13 @@ enum BudgetMode: UInt32, CaseIterable {
         case .daily: (kVK_ANSI_D, "D")
         case .planning: (kVK_ANSI_P, "P")
         case .unplanned: (kVK_ANSI_U, "U")
+        case .settings: (kVK_ANSI_Comma, ",")
         }
     }
+}
+
+enum SprintPreferences {
+    static let store = UserDefaults(suiteName: "local.sprint.settings")!
 }
 
 struct TicketTask: Codable {
@@ -97,7 +103,7 @@ struct LocalTicket: Codable {
 
     var reserve: Int { unplannedReserveMinutes ?? 480 }
     var capacity: Int { Self.available - reserve }
-    var target: Int { sprintPointTarget ?? 4 }
+    var target: Int { (SprintPreferences.store.object(forKey: "sprintPointTarget") as? Int) ?? sprintPointTarget ?? 4 }
     var factor: Double { Double(capacity) / Double(max(1, target)) }
     var planned: Int { Int((Double(storyPoints ?? 0) * factor).rounded()) }
     func liveBlock(at now: Date = .now) -> WorkBlock? {
@@ -722,6 +728,22 @@ final class Scenario: ObservableObject {
         }
     }
 
+    @Published var actionIndex: Int?
+    @Published var actionWorktrees: [URL]?
+    @Published var actionMessage: String?
+    @Published var jiraURL = SprintPreferences.store.string(forKey: "jiraURL") ?? "" {
+        didSet { SprintPreferences.store.set(jiraURL, forKey: "jiraURL") }
+    }
+    @Published var ticketsDirectory = SprintPreferences.store.string(forKey: "ticketsDirectory") ?? "" {
+        didSet { SprintPreferences.store.set(ticketsDirectory, forKey: "ticketsDirectory") }
+    }
+    @Published var pointTarget = SprintPreferences.store.integer(forKey: "sprintPointTarget")
+
+    func setPointTarget(_ value: Int) {
+        pointTarget = value
+        SprintPreferences.store.set(value, forKey: "sprintPointTarget")
+    }
+
     @Published var storyFocus: StoryFocus?
     @Published var selectedBudget: String?
     @Published var selectedCriterion: Int?
@@ -806,20 +828,19 @@ struct BudgetView: View {
                 weeklyView()
             } else if scenario.mode == .unplanned {
                 unplannedView()
+            } else if scenario.mode == .settings {
+                settingsView()
             } else {
             let forecast = scenario.ticket.map(storyForecast)
             let atRisk = forecast.map { $0.margin < 0 } ?? false
             let tone: Color = atRisk ? .red : .green
             VStack(alignment: .leading, spacing: 22) {
-                HStack(spacing: 18) {
+                HStack(alignment: .top, spacing: 18) {
                     Text("Story").font(viewTitleFont)
                     storyBar
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 106)
-                .background(Color(red: 0.15, green: 0.18, blue: 0.23), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(.white.opacity(0.24)).frame(height: 1)
+                        .padding(.horizontal, 10)
+                        .frame(height: 106)
+                        .background(Color(red: 0.15, green: 0.18, blue: 0.23), in: RoundedRectangle(cornerRadius: 6))
                 }
                 GeometryReader { layout in
                 let focus = scenario.storyFocus
@@ -841,25 +862,6 @@ struct BudgetView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Ticket Budget").font(.system(size: 19, weight: .semibold))
-                    if let ticket = scenario.ticket {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack {
-                                Text("H/5D").frame(width: 64, alignment: .leading)
-                                Text(clock(ticket.capacity)).monospacedDigit()
-                            }
-                            planningInput("SP/5D", value: String(ticket.target), id: " ")
-                            HStack {
-                                Text("H/SP").frame(width: 64, alignment: .leading)
-                                Text(clock(Int(ticket.factor.rounded()))).monospacedDigit()
-                            }
-                            .accessibilityLabel("Hours per story point")
-                            .accessibilityValue(clock(Int(ticket.factor.rounded())))
-                        }
-                        if scenario.invalidDuration && (scenario.editingTask == "" || scenario.editingTask == " ") {
-                            Text("Enter a positive duration (HH:MM) or a positive whole SP target.")
-                                .foregroundStyle(.red)
-                        }
-                    }
                     if let error = scenario.ticketReadError {
                         Text(error).foregroundStyle(.orange).font(.system(size: 15))
                     }
@@ -947,6 +949,11 @@ struct BudgetView: View {
                         if focus == nil {
                         Text("Remarks").font(.system(size: 19, weight: .semibold))
                         Text(ticket.remarks ?? "—").font(.system(size: 17)).textSelection(.enabled)
+                        Text("Pull Requests").font(.headline)
+                        TextField("One PR URL per line", text: storyLinks(ticket.key, field: "prs"), axis: .vertical)
+                        Text("Chats").font(.headline)
+                        TextField("ChatGPT links", text: storyLinks(ticket.key, field: "chats"), axis: .vertical)
+                        TextField("Codex session IDs", text: storyLinks(ticket.key, field: "codex"), axis: .vertical)
                         }
                 if focus == .progress {
                     HStack(alignment: .top, spacing: 24) {
@@ -987,18 +994,188 @@ struct BudgetView: View {
                 Spacer(minLength: 0)
                 HStack {
                     Spacer()
-                    Text("A  Criteria    T  Budget    P  Progress    ↩  Copy story key    ⌥ J  Toggle    Esc  Back / Close")
+                    Text("A  Criteria    T  Budget    P  Progress    ↩  Story actions    ⌘,  Settings    ⌥ J  Toggle    Esc  Back / Close")
                         .font(.system(size: 15)).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 32)
-            .padding(.top, 6)
+            .padding(.horizontal, 26)
+            .padding(.top, 26)
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color(red: 0.085, green: 0.10, blue: 0.13))
+            .overlay {
+                if let index = scenario.actionIndex {
+                    Color.black.opacity(0.38).overlay { storyActionMenu(index) }
+                }
+            }
             .preferredColorScheme(.dark)
             }
         }
+    }
+
+    private func settingsView() -> some View {
+        reportShell(.settings, subtitle: "") {
+            let target = scenario.pointTarget > 0 ? scenario.pointTarget : scenario.ticket?.target ?? 4
+            let capacity = scenario.ticket?.capacity ?? LocalTicket.available - 480
+            VStack(alignment: .leading, spacing: 14) {
+                Stepper("SP/5D   \(target)", value: Binding(
+                    get: { target }, set: scenario.setPointTarget
+                ), in: 1...1000)
+                Text("H/5D   " + clock(capacity))
+                Text("H/SP   " + clock(Int((Double(capacity) / Double(target)).rounded())))
+                Divider()
+                Text("Jira Base URL")
+                TextField("https://jira.example.com", text: $scenario.jiraURL)
+                Text("Tickets Folder")
+                TextField("~/tickets", text: $scenario.ticketsDirectory)
+            }
+            .frame(maxWidth: 600)
+        }
+    }
+
+    private func storyLinks(_ key: String, field: String) -> Binding<String> {
+        let storageKey = "story.\(key).\(field)"
+        return Binding(get: { SprintPreferences.store.string(forKey: storageKey) ?? "" },
+                       set: { SprintPreferences.store.set($0, forKey: storageKey) })
+    }
+
+    private var storyActionLabels: [String] {
+        if let trees = scenario.actionWorktrees {
+            return ["Open All Worktrees"] + trees.map(\.lastPathComponent)
+        }
+        return ["Open in Jira", "Open PRs in Chrome", "Open Worktrees", "Open in ChatGPT · planned", "Open in Codex · planned"]
+    }
+
+    private func webURL(_ raw: String) -> URL? {
+        guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    private func directories(in path: URL) -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: path, includingPropertiesForKeys: [.isDirectoryKey],
+                                                                  options: [.skipsHiddenFiles])) ?? []
+        return files.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private func openStoryURLs(_ urls: [URL], bundle: String? = nil) {
+        guard let bundle else {
+            scenario.actionIndex = nil
+            for url in urls { NSWorkspace.shared.open(url) }
+            return
+        }
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else {
+            scenario.actionMessage = "The requested app is not installed."
+            return
+        }
+        scenario.actionIndex = nil
+        NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: .init()) { _, error in
+            if let error { NSLog("Sprint could not open story resources: %@", error.localizedDescription) }
+        }
+    }
+
+    func handleStoryActionKey(_ key: Int) -> Bool {
+        guard scenario.mode == .ticket, let story = scenario.ticket else { return false }
+        if let index = scenario.actionIndex {
+            let count = storyActionLabels.count
+            switch key {
+            case kVK_UpArrow: scenario.actionIndex = (index + count - 1) % count
+            case kVK_DownArrow: scenario.actionIndex = (index + 1) % count
+            case kVK_Escape:
+                if scenario.actionWorktrees != nil {
+                    scenario.actionWorktrees = nil
+                    scenario.actionIndex = 2
+                    scenario.actionMessage = nil
+                } else { scenario.actionIndex = nil }
+            case kVK_Return, kVK_ANSI_KeypadEnter: performStoryAction(index, story: story)
+            default: break
+            }
+            return true
+        }
+        guard key == kVK_Return || key == kVK_ANSI_KeypadEnter else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(story.key, forType: .string)
+        scenario.actionWorktrees = nil
+        scenario.actionMessage = nil
+        scenario.actionIndex = 0
+        return true
+    }
+
+    private func performStoryAction(_ index: Int, story: LocalTicket) {
+        scenario.actionMessage = nil
+        if let trees = scenario.actionWorktrees {
+            openStoryURLs(index == 0 ? trees : [trees[index - 1]], bundle: "com.microsoft.VSCode")
+            return
+        }
+        switch index {
+        case 0:
+            guard let base = webURL(scenario.jiraURL), base.query == nil, base.fragment == nil else {
+                scenario.actionMessage = "Set a Jira base URL in Settings."
+                return
+            }
+            let browse = base.lastPathComponent == "browse" ? base : base.appendingPathComponent("browse")
+            openStoryURLs([browse.appendingPathComponent(story.key)])
+        case 1:
+            let urls = storyLinks(story.key, field: "prs").wrappedValue.split(whereSeparator: \.isNewline)
+                .compactMap { webURL(String($0)) }
+            guard !urls.isEmpty else { scenario.actionMessage = "Add PR URLs to the story first."; return }
+            openStoryURLs(urls, bundle: "com.google.Chrome")
+        case 2:
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            let root = scenario.ticketsDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            let roots = root.isEmpty ? ["tickets", "Tickets"].map { home.appendingPathComponent($0) }
+                : [URL(fileURLWithPath: NSString(string: root).expandingTildeInPath)]
+            let key = story.key.lowercased()
+            let folders = roots.flatMap { directories(in: $0) }
+            let matches = folders.filter {
+                let name = $0.lastPathComponent.lowercased()
+                return name == key || name.hasPrefix(key + "-")
+            }
+            let trees = matches.flatMap { directories(in: $0) }.filter {
+                ["worktrees", "work trees"].contains($0.lastPathComponent.lowercased())
+            }.flatMap { directories(in: $0) }
+            let unique = trees.reduce(into: [URL]()) { result, tree in
+                if !result.contains(where: { $0.resolvingSymlinksInPath() == tree.resolvingSymlinksInPath() }) {
+                    result.append(tree)
+                }
+            }
+            guard !unique.isEmpty else { scenario.actionMessage = "No worktrees found in the Tickets folder."; return }
+            scenario.actionWorktrees = unique
+            scenario.actionIndex = 0
+        default: scenario.actionMessage = "Chat launch is not configured yet."
+        }
+    }
+
+    private func storyActionMenu(_ index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(scenario.actionWorktrees == nil ? "Story Actions" : "Worktrees").font(.title2.bold())
+            Text("Ticket key copied  ·  ↑ ↓ Select  ·  ↩ Open  ·  Esc Back").foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(storyActionLabels.enumerated()), id: \.offset) { row, label in
+                        Button {
+                            if let story = scenario.ticket { performStoryAction(row, story: story) }
+                        } label: {
+                            Text(label).frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                                .background(row == index ? Color.blue.opacity(0.42) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 5))
+                        }
+                        .buttonStyle(.plain)
+                        .id(row)
+                    }
+                }
+            }
+            .frame(maxHeight: 240)
+            .onChange(of: index) { _, row in proxy.scrollTo(row) }
+            }
+            if let message = scenario.actionMessage { Text(message).foregroundStyle(.orange) }
+        }
+        .padding(22)
+        .frame(width: 460)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func progressTable(_ tasks: [TicketTask], showDivider: Bool) -> some View {
@@ -1564,7 +1741,7 @@ struct BudgetView: View {
                 }
             }
             Spacer(minLength: 0)
-            Text("⌥" + mode.key.letter + "  Toggle    Esc  Close").font(.system(size: 15)).foregroundStyle(.secondary)
+            Text(mode == .settings ? "⌘,  Settings    ← →  Switch view    Esc  Close" : "⌥" + mode.key.letter + "  Toggle    ⌘,  Settings    Esc  Close").font(.system(size: 15)).foregroundStyle(.secondary)
         }
         .padding(26)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -2197,13 +2374,18 @@ final class BudgetWindow: NSWindow {
     var moveSelection: ((Int) -> Void)?
     var switchTab: ((Int) -> Void)?
     var switchMode: ((Int) -> Void)?
-    var copyStoryKey: (() -> Bool)?
+    var storyActionKey: ((Int) -> Bool)?
+    var openSettings: (() -> Void)?
     var storyFocusKey: ((Int) -> Bool)?
     var toggleTaskDetails: (() -> Bool)?
 
     override func sendEvent(_ event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-        if event.type == .keyDown, Int(event.keyCode) == kVK_Tab,
+        if event.type == .keyDown, modifiers == .command, Int(event.keyCode) == kVK_ANSI_Comma {
+            openSettings?()
+            return
+        }
+        if event.type == .keyDown, !modifiers.contains(.command), Int(event.keyCode) == kVK_Tab,
            modifiers == .control || modifiers == [.control, .shift] {
             switchTab?(modifiers.contains(.shift) ? -1 : 1)
             return
@@ -2217,10 +2399,9 @@ final class BudgetWindow: NSWindow {
                 super.sendEvent(event)
                 return
             }
+            if !(firstResponder is NSTextView), storyActionKey?(Int(event.keyCode)) == true { return }
             if !(firstResponder is NSTextView), storyFocusKey?(Int(event.keyCode)) == true { return }
             switch Int(event.keyCode) {
-            case kVK_Return, kVK_ANSI_KeypadEnter:
-                if copyStoryKey?() == true { return }
             case kVK_Space:
                 if !(firstResponder is NSTextView), !event.isARepeat, toggleTaskDetails?() == true { return }
             case kVK_LeftArrow, kVK_RightArrow:
@@ -2270,15 +2451,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let index = modes.firstIndex(of: mode) else { return }
             self.show(modes[(index + step + modes.count) % modes.count])
         }
-        panel.copyStoryKey = {
-            let scenario = budgetView.scenario
-            guard scenario.mode == .ticket, let key = scenario.ticket?.key else {
-                return false
-            }
-            let clipboard = NSPasteboard.general
-            clipboard.clearContents()
-            return clipboard.setString(key, forType: .string)
-        }
+        panel.storyActionKey = budgetView.handleStoryActionKey
+        panel.openSettings = { [weak self] in self?.show(.settings) }
         panel.storyFocusKey = { key in
             let scenario = budgetView.scenario
             guard scenario.mode == .ticket else { return false }
@@ -2324,7 +2498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status.button?.image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Sprint")
         let menu = NSMenu()
         for mode in BudgetMode.allCases {
-            let item = menu.addItem(withTitle: mode.title + "  ⌥" + mode.key.letter,
+            let item = menu.addItem(withTitle: mode.title + (mode == .settings ? "  ⌘," : "  ⌥" + mode.key.letter),
                                     action: #selector(openMode(_:)), keyEquivalent: "")
             item.tag = Int(mode.rawValue)
             item.target = self
@@ -2348,7 +2522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return noErr
         }, 1, &event, Unmanaged.passUnretained(self).toOpaque(), nil)
         var unavailable: [String] = []
-        for mode in BudgetMode.allCases {
+        for mode in BudgetMode.allCases where mode != .settings {
             var shortcut: EventHotKeyRef?
             let registration = RegisterEventHotKey(UInt32(mode.key.code), UInt32(optionKey),
                 EventHotKeyID(signature: 0x5A454954, id: mode.rawValue),
@@ -2390,6 +2564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func show(_ mode: BudgetMode) {
         guard let window, let scenario else { return }
         scenario.storyFocus = nil
+        scenario.actionIndex = nil
         if mode == .daily { scenario.dailyOffset = 0 }
         scenario.selectedReportRow = nil
         if mode == .unplanned || mode == .daily { scenario.reloadUnplanned() }
