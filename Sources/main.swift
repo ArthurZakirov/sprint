@@ -605,13 +605,18 @@ final class Scenario: ObservableObject {
             ticketReadError = "No local stories. Create one with sprint ticket create."
             return
         }
-        if ticket?.key != entry.ticket.key {
+        let changedStory = ticket?.key != entry.ticket.key
+        if changedStory {
             editingTask = nil
+            expandedComments = []
+        }
+        if changedStory || preferActive {
             selectedTask = nil
             taskDetailsID = nil
-            selectedBudget = nil
             selectedCriterion = nil
-            expandedComments = []
+            selectedBudget = entry.ticket.stage == "done"
+                ? (entry.ticket.remaining < 0 ? "Overrun" : "Unused Budget")
+                : "Remaining budget"
         }
         ticketURL = entry.url
         ticket = entry.ticket
