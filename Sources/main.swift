@@ -750,7 +750,10 @@ struct BudgetView: View {
             let atRisk = forecast.map { $0.margin < 0 } ?? false
             let tone: Color = atRisk ? .red : .green
             VStack(alignment: .leading, spacing: 22) {
-                storyBar
+                HStack(spacing: 18) {
+                    Text("Story").font(viewTitleFont)
+                    storyBar
+                }
                 .padding(.horizontal, 10)
                 .frame(height: 106)
                 .background(Color(red: 0.15, green: 0.18, blue: 0.23), in: RoundedRectangle(cornerRadius: 6))
@@ -1441,11 +1444,13 @@ struct BudgetView: View {
         .font(.system(size: 15))
     }
 
+    private let viewTitleFont = Font.system(size: 33, weight: .bold)
+
     private func reportShell<Content: View>(_ mode: BudgetMode, subtitle: String,
                                             @ViewBuilder content: @escaping () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(mode.title).font(.system(size: 33, weight: .bold))
+                Text(mode.title).font(viewTitleFont)
                 Text(subtitle).foregroundStyle(.secondary)
             }
             ScrollViewReader { proxy in
