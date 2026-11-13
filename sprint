@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Command-line interface to the local Time Budget store."""
+import argparse
+from datetime import datetime, timezone
+from uuid import uuid4
+import json
+from pathlib import Path
+import subprocess
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Manage the local Time Budget ticket.")
+    parser.add_argument("--ticket", help="Target a local story by key")
+    groups = parser.add_subparsers(dest="group", required=True)
+    ticket = groups.add_parser("ticket", help="View or edit the active ticket")
+    task = groups.add_parser("task", help="Add or edit tasks on the active ticket")
+    tickets = ticket.add_subparsers(dest="action", required=True)
+    tasks = task.add_subparsers(dest="action", required=True)
+
+    def output(command):
+        command.add_argument("--json", action="store_true", help="Print ticket and balance as JSON")
+
+    output(tickets.add_parser("view", help="Show ticket, tasks, and calculated balance"))
+    output(tickets.add_parser("list", help="List local stories"))
+    for action in ("create", "edit"):
+        command = tickets.add_parser(action)
+        if action == "create":
+            command.add_argument("key")
+        command.add_argument("--title", required=action == "create")
+        command.add_argument("--description")
+        command.add_argument("--story-status", dest="storyStatus", choices=("planned", "in-progress", "done"))
+        command.add_argument("--past-sprint", dest="sprint", help="Archive label for a past sprint")
+        command.add_argument("--story-points", type=int)
+        command.add_argument("--criterion", action="append", dest="acceptanceCriteria",
+                             help="Acceptance criterion; repeat for multiple. Replaces the criteria list.")
+        command.add_argument("--unplanned-reserve-minutes", dest="unplannedReserveMinutes", type=int)
+        command.add_argument("--sprint-point-target", dest="sprintPointTarget", type=int)
+        output(command)
+    for action in ("add", "edit"):
+        command = tasks.add_parser(action)
+        command.add_argument("id")
+        command.add_argument("--title", required=action == "add")
+        command.add_argument("--minutes", "--estimate-minutes", type=int, required=action == "add")
+        if action == "edit":
+            command.add_argument("--spent-minutes", dest="spentMinutes", type=int)
+        command.add_argument("--status", choices=("open", "done", "planned", "backlog"))
+        command.add_argument("--started-at", dest="startedAt", help="Actual start as ISO 8601 with a time-zone offset")
+        command.add_argument("--completed-at", dest="completedAt", help="Actual completion as ISO 8601 with a time-zone offset")
+        inclusion = command.add_mutually_exclusive_group()
+        inclusion.add_argument("--include", dest="included", action="store_true")
+        inclusion.add_argument("--exclude", dest="included", action="store_false")
+        command.set_defaults(included=None)
+        output(command)
+
+    for action, help_text in (("start", "Start the task timer"),
+                              ("pause", "Pause the task timer"),
+                              ("resume", "Resume the task timer")):
+        command = tasks.add_parser(action, help=help_text)
+        command.add_argument("id", metavar="TASK_ID")
+        output(command)
+
+    work = groups.add_parser("work", help="Record progress and time spent")
+    work_actions = work.add_subparsers(dest="action", required=True)
+    log = work_actions.add_parser("log", help="Record a block against a task")
+    log.add_argument("taskId", metavar="TASK_ID")
+    log.add_argument("--minutes", type=int, required=True)
+    log.add_argument("--note", required=True)
+    log.add_argument("--unplanned", action="store_true", help="Count this block as unplanned work in Planning")
+    log.add_argument("--at", help="ISO 8601 timestamp with offset; defaults to now")
+    output(log)
+
+    criterion = groups.add_parser("criterion", help="Annotate acceptance criteria")
+    criterion_actions = criterion.add_subparsers(required=True)
+    comment = criterion_actions.add_parser("comment", help="Manage comments on a criterion")
+    comment_actions = comment.add_subparsers(dest="action", required=True)
+    add_comment = comment_actions.add_parser("add", help="Attach a comment to an exact quote")
+    add_comment.add_argument("criterion", metavar="AC-N")
+    add_comment.add_argument("--quote", required=True)
+    add_comment.add_argument("--kind", choices=("question", "definition"), required=True)
+    add_comment.add_argument("--body", required=True)
+    output(add_comment)
+    output(comment_actions.add_parser("list", help="List criterion comments"))
+
+    notes = groups.add_parser("notes", help="Read or write speaking notes")
+    note_actions = notes.add_subparsers(dest="action", required=True)
+    for action in ("show", "set"):
+        command = note_actions.add_parser(action)
+        command.add_argument("mode", choices=("daily", "planning"))
+        command.add_argument("--offset", type=int, default=0, help="Earlier daily reports, e.g. -1")
+        if action == "set":
+            command.add_argument("--body", required=True)
+        output(command)
+
+    args = vars(parser.parse_args())
+    group, action, as_json = (args.pop(name) for name in ("group", "action", "json"))
+    target = args.pop("ticket")
+    fields = {key: value for key, value in args.items() if value is not None}
+    if "story_points" in fields:
+        fields["storyPoints"] = fields.pop("story_points")
+    if "status" in fields:
+        status = fields.pop("status")
+        if status in ("open", "done"):
+            fields["done"] = status == "done"
+        if status in ("planned", "backlog"):
+            if "included" in fields:
+                parser.error("use either a planning status or --include/--exclude")
+            fields["included"] = status == "planned"
+
+    binary = Path.home() / "Applications/Zeitkonto.app/Contents/MacOS/Zeitkonto"
+
+    def run(command, payload=None):
+        try:
+            key = target or (fields.get("key") if command == "ticket-create" else None)
+            arguments = [binary, command] + (["--ticket", key] if key else [])
+            result = subprocess.run(arguments, input=json.dumps(payload),
+                                    text=True, stdout=subprocess.PIPE, check=False)
+        except OSError as error:
+            parser.exit(1, f"sprint: {error}\n")
+        if result.returncode:
+            raise SystemExit(result.returncode)
+        return json.loads(result.stdout)
+
+    if group == "notes":
+        if target:
+            fields["ticket"] = target
+        result = run("notes-" + action, fields)
+        print(json.dumps(result, indent=2, ensure_ascii=False) if as_json else result["body"])
+        return
+    if group == "criterion":
+        result = run("criterion-comment-add", fields) if action == "add" else run("show")
+    elif group == "work":
+        fields.setdefault("at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        fields["id"] = str(uuid4())
+        result = run("work-log", fields)
+    elif group == "ticket":
+        if action == "list":
+            entries = run("story-list")
+            if as_json:
+                print(json.dumps(entries, indent=2, ensure_ascii=False))
+            else:
+                for entry in entries:
+                    print(entry["key"], entry["title"])
+            return
+        if action == "view":
+            result = run("show")
+        elif action == "create":
+            fields.setdefault("description", "")
+            fields.setdefault("acceptanceCriteria", [])
+            result = run("ticket-create", fields)
+        else:
+            if not fields:
+                parser.error("ticket edit requires at least one flag")
+            result = run("ticket-edit", fields)
+    elif action in ("start", "pause", "resume"):
+        result = run("task-" + action, fields)
+    else:
+        if action == "add":
+            fields.setdefault("done", False)
+            fields.setdefault("included", True)
+        elif len(fields) == 1:
+            parser.error("task edit requires at least one flag")
+        result = run("task-add" if action == "add" else "task-update", fields)
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+    data = result["ticket"]
+    print(f'{data["key"]}  {data["title"]}')
+    if data.get("storyPoints") is not None:
+        print(f'{data["storyPoints"]} story points')
+    print(f'{duration(int(result["minutesPerPoint"] + 0.5))} developer time per story point')
+    if data["description"]:
+        print(data["description"])
+    for index, criterion in enumerate(data["acceptanceCriteria"], 1):
+        print(f"  AC-{index}  {criterion}")
+    for comment in data.get("criterionComments", []):
+        print(f'  {comment["criterion"]} · {comment["quote"]} [{comment["kind"]}]: {comment["body"]}')
+    states = {state["id"]: state for state in result["taskStates"]}
+    for task_data in data.get("tasks", []):
+        status = states[task_data["id"]]["status"]
+        print(f'  {task_data["id"]}: {task_data["title"]}  {duration(task_data["minutes"])}  [{status}]')
+    for key, label in (("planned", "Planned"), ("spent", "Spent"), ("remainingBudget", "Remaining budget"),
+                       ("remainingEffort", "Remaining effort"), ("buffer", "Buffer"), ("overrun", "Overrun")):
+        print(f'{label:<18} {duration(result["balanceMinutes"][key])}')
+
+
+def duration(minutes):
+    hours, remainder = divmod(abs(minutes), 60)
+    return f'{"-" if minutes < 0 else ""}{hours:02}:{remainder:02}'
+
+
+if __name__ == "__main__":
+    main()
