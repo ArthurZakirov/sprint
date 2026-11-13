@@ -685,7 +685,14 @@ enum ReportNotes {
 
 enum StoryFocus { case criteria, budget, progress }
 
+enum DailyActionStage: Equatable { case actions, draft, destination }
+
 final class Scenario: ObservableObject {
+    @Published var dailyActionStage: DailyActionStage?
+    @Published var dailyPrompt = ""
+    @Published var dailyDestination = 0
+    @Published var dailyDestinationConfirmed = false
+
     @Published var speakingNotes: [String: String] = [:]
     @Published var notesError: String?
 
@@ -810,6 +817,7 @@ final class Scenario: ObservableObject {
 
     func switchTab(_ step: Int) {
         if mode == .daily {
+            guard dailyActionStage == nil else { return }
             selectedReportRow = nil
             dailyOffset = max(-3650, min(0, dailyOffset + step))
             reloadNotes()
@@ -1460,6 +1468,101 @@ struct BudgetView: View {
         .modifier(ReportSection(tint: .cyan))
     }
 
+    func handleDailyActionKey(_ key: Int, editingText: Bool) -> Bool {
+        guard scenario.mode == .daily else { return false }
+        let enter = key == kVK_Return || key == kVK_ANSI_KeypadEnter
+        switch scenario.dailyActionStage {
+        case nil:
+            guard enter, !editingText else { return false }
+            scenario.dailyActionStage = .actions
+        case .actions:
+            if enter { prepareDailyPrompt() }
+            else if key == kVK_Escape { scenario.dailyActionStage = nil }
+        case .draft:
+            if enter { chooseDailyDestination() }
+            else if key == kVK_Escape { scenario.dailyActionStage = .actions }
+            else { return editingText ? false : true }
+        case .destination:
+            if key == kVK_Escape { scenario.dailyActionStage = .draft }
+            else if key == kVK_UpArrow || key == kVK_DownArrow {
+                scenario.dailyDestination = 1 - scenario.dailyDestination
+                scenario.dailyDestinationConfirmed = false
+            } else if enter { scenario.dailyDestinationConfirmed = true }
+        }
+        return true
+    }
+
+    private func prepareDailyPrompt() {
+        let period = reportPeriod(weekly: false)
+        let formatter = ISO8601DateFormatter()
+        let start = formatter.string(from: period.start)
+        let end = formatter.string(from: period.end)
+        let offset = scenario.dailyOffset
+        let tickets = reportGroups(weekly: false).map { $0.story.key }.joined(separator: ", ")
+        scenario.dailyPrompt = """
+        Prepare my Sprint Daily Standup talking points for the period from \(start) up to (excluding) \(end). Use evidence available as of now. Sprint currently shows these stories: \(tickets.isEmpty ? "none" : tickets).
+
+        Review relevant Slack messages, PR status and review activity, and the work chats linked to these stories where access is available. Compare with Sprint's task records and existing speaking notes. Report gaps in access and distinguish confirmed outcomes from open work. Update local task progress only when supported by evidence. Do not infer time spent or mark work complete without evidence.
+
+        For each ticket, write short, speakable bullets:
+        • Outcome / Deliverable: What did I build, finish, or move forward?
+        • Benefit: What does that enable, improve, or prevent?
+        • Complexity: Mention a concrete complication only if it explains the work.
+        • Follow-up after Daily: Name who I need to speak with and about what. Reserve team-wide blockers for the standup.
+
+        Before writing, confirm that Daily offset \(offset) still corresponds to the specified dates. Read existing notes with sprint --ticket KEY notes show daily --offset \(offset). Preserve relevant manual notes and save the merged text with sprint --ticket KEY notes set daily --offset \(offset) --body "TEXT" for each ticket. Use the same notes commands without --ticket for verified contributions without a Jira story. Keep Slack, PRs, and chats read-only.
+        """
+        scenario.dailyActionStage = .draft
+    }
+
+    private func chooseDailyDestination() {
+        scenario.dailyDestination = 0
+        scenario.dailyDestinationConfirmed = false
+        scenario.dailyActionStage = .destination
+    }
+
+    @FocusState private var dailyPromptFocused: Bool
+
+    private func dailyActionMenu(_ stage: DailyActionStage) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            switch stage {
+            case .actions:
+                Text("Daily Actions").font(.title2.bold())
+                Button("Prepare your Daily Standup talking points", action: prepareDailyPrompt)
+            case .draft:
+                Text("Prepare your Daily Standup talking points").font(.title2.bold())
+                TextEditor(text: $scenario.dailyPrompt)
+                    .focused($dailyPromptFocused)
+                    .onAppear { dailyPromptFocused = true }
+                    .font(.system(size: 16))
+                    .frame(height: 360)
+                Text("Shift–Enter inserts a new line.").foregroundStyle(.secondary)
+                Button("Send to…", action: chooseDailyDestination)
+            case .destination:
+                Text("Send to").font(.title2.bold())
+                ForEach(Array(["ChatGPT", "Codex"].enumerated()), id: \.offset) { index, name in
+                    Button {
+                        scenario.dailyDestination = index
+                        scenario.dailyDestinationConfirmed = true
+                    } label: {
+                        Text(name)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(index == scenario.dailyDestination ? Color.blue.opacity(0.42) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                }
+                if scenario.dailyDestinationConfirmed {
+                    Text("Sending is not available yet.").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(22)
+        .frame(width: stage == .draft ? 700 : 440)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
     private func dailyView() -> some View {
         let period = reportPeriod(weekly: false)
         let formatter = DateFormatter()
@@ -1472,12 +1575,18 @@ struct BudgetView: View {
                 Button("← Earlier standup") { scenario.switchTab(-1) }
                 Button("Later standup →") { scenario.switchTab(1) }.disabled(scenario.dailyOffset == 0)
                 Spacer()
+                Button("↩ Daily Actions") { scenario.dailyActionStage = .actions }
                 Text("⌃⇧Tab / ⌃Tab").foregroundStyle(.secondary)
             }
             HStack(alignment: .top, spacing: 24) {
                 dailyUnplannedList()
                     .frame(width: 245, alignment: .leading)
                 taskActivity(weekly: false)
+            }
+        }
+        .overlay {
+            if let stage = scenario.dailyActionStage {
+                Color.black.opacity(0.38).overlay { dailyActionMenu(stage) }
             }
         }
     }
@@ -2472,6 +2581,7 @@ final class BudgetWindow: NSWindow {
     var moveSelection: ((Int) -> Void)?
     var switchTab: ((Int) -> Void)?
     var switchMode: ((Int) -> Void)?
+    var dailyActionKey: ((Int, Bool) -> Bool)?
     var storyActionKey: ((Int) -> Bool)?
     var openSettings: (() -> Void)?
     var storyFocusKey: ((Int) -> Bool)?
@@ -2497,6 +2607,7 @@ final class BudgetWindow: NSWindow {
                 super.sendEvent(event)
                 return
             }
+            if dailyActionKey?(Int(event.keyCode), firstResponder is NSTextView) == true { return }
             if !(firstResponder is NSTextView), storyActionKey?(Int(event.keyCode)) == true { return }
             if !(firstResponder is NSTextView), storyFocusKey?(Int(event.keyCode)) == true { return }
             switch Int(event.keyCode) {
@@ -2549,6 +2660,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let index = modes.firstIndex(of: mode) else { return }
             self.show(modes[(index + step + modes.count) % modes.count])
         }
+        panel.dailyActionKey = budgetView.handleDailyActionKey
         panel.storyActionKey = budgetView.handleStoryActionKey
         panel.openSettings = { [weak self] in self?.show(.settings) }
         panel.storyFocusKey = { key in
@@ -2661,6 +2773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func show(_ mode: BudgetMode) {
         guard let window, let scenario else { return }
+        scenario.dailyActionStage = nil
         scenario.storyFocus = nil
         scenario.actionIndex = nil
         if mode == .daily { scenario.dailyOffset = 0 }
