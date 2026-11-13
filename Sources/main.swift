@@ -3,13 +3,16 @@ import SwiftUI
 import Carbon
 
 enum BudgetMode: UInt32, CaseIterable {
-    case ticket = 1, daily, planning
+    case ticket = 1, daily, planning, unplanned
+
+    static let navigation: [Self] = [.daily, .ticket, .unplanned, .planning]
 
     var title: String {
         switch self {
         case .ticket: "Ticket Decision"
         case .daily: "Daily Standup"
         case .planning: "Planning"
+        case .unplanned: "Unplanned Work"
         }
     }
 
@@ -18,6 +21,7 @@ enum BudgetMode: UInt32, CaseIterable {
         case .ticket: (kVK_ANSI_J, "J")
         case .daily: (kVK_ANSI_D, "D")
         case .planning: (kVK_ANSI_P, "P")
+        case .unplanned: (kVK_ANSI_U, "U")
         }
     }
 }
@@ -473,6 +477,42 @@ enum TicketStore {
     }
 }
 
+struct UnplannedItem: Codable, Identifiable {
+    enum Status: String, Codable, CaseIterable {
+        case open = "Open"
+        case inProgress = "In Progress"
+        case completed = "Completed"
+    }
+
+    let id: Int
+    var date: Date
+    var title: String
+    var description: String
+    var status: Status
+}
+
+enum UnplannedStore {
+    static var file: URL { TicketStore.root.appendingPathComponent("unplanned-work.json") }
+
+    static func read() throws -> [UnplannedItem] {
+        do { return try JSONDecoder().decode([UnplannedItem].self, from: Data(contentsOf: file)) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+    }
+
+    static func save(_ item: UnplannedItem) throws -> [UnplannedItem] {
+        try FileManager.default.createDirectory(at: TicketStore.root, withIntermediateDirectories: true)
+        var items = try read()
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index] = item
+        } else {
+            items.append(UnplannedItem(id: (items.map(\.id).max() ?? 0) + 1, date: item.date,
+                                       title: item.title, description: item.description, status: item.status))
+        }
+        try JSONEncoder().encode(items).write(to: file, options: .atomic)
+        return items.sorted { $0.date == $1.date ? $0.id > $1.id : $0.date > $1.date }
+    }
+}
+
 enum ReportNotes {
     static var file: URL {
         ProcessInfo.processInfo.environment["SPRINT_NOTES_FILE"].map { URL(fileURLWithPath: $0) }
@@ -584,6 +624,40 @@ final class Scenario: ObservableObject {
             notesError = error.localizedDescription
         }
     }
+    @Published var unplannedItems: [UnplannedItem] = []
+    @Published var selectedUnplanned: Int?
+    @Published var unplannedDraft: UnplannedItem?
+    @Published var unplannedError: String?
+    @Published var selectedReportRow: ReportRowID?
+
+    func reloadUnplanned() {
+        do {
+            unplannedItems = try UnplannedStore.read().sorted {
+                $0.date == $1.date ? $0.id > $1.id : $0.date > $1.date
+            }
+            if !unplannedItems.contains(where: { $0.id == selectedUnplanned }) {
+                selectedUnplanned = unplannedItems.first?.id
+            }
+            unplannedError = nil
+        } catch {
+            unplannedError = error.localizedDescription
+        }
+    }
+
+    func saveUnplanned() {
+        guard var draft = unplannedDraft else { return }
+        draft.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.title.isEmpty else { return }
+        do {
+            unplannedItems = try UnplannedStore.save(draft)
+            selectedUnplanned = draft.id == 0 ? unplannedItems.map(\.id).max() : draft.id
+            unplannedDraft = nil
+            unplannedError = nil
+        } catch {
+            unplannedError = error.localizedDescription
+        }
+    }
+
     @Published var selectedBudget: String?
     @Published var selectedCriterion: Int?
     @Published var expandedComments: Set<String> = []
@@ -627,6 +701,7 @@ final class Scenario: ObservableObject {
 
     func switchTab(_ step: Int) {
         if mode == .daily {
+            selectedReportRow = nil
             dailyOffset = max(-3650, min(0, dailyOffset + step))
             reloadNotes()
             return
@@ -641,6 +716,11 @@ final class Scenario: ObservableObject {
     @Published var editingTask: String?
     @Published var draft = ""
     @Published var invalidDuration = false
+}
+
+struct ReportRowID: Hashable {
+    let story: String
+    let task: String
 }
 
 struct BudgetView: View {
@@ -658,6 +738,8 @@ struct BudgetView: View {
                 dailyView()
             } else if scenario.mode == .planning {
                 weeklyView()
+            } else if scenario.mode == .unplanned {
+                unplannedView()
             } else {
             let forecast = scenario.ticket.map(storyForecast)
             let atRisk = forecast.map { $0.margin < 0 } ?? false
@@ -1095,10 +1177,10 @@ struct BudgetView: View {
         }
     }
 
-    private func taskActivity(weekly: Bool) -> some View {
+    private func reportGroups(weekly: Bool) -> [(story: LocalTicket, rows: [ReportTask])] {
         let period = reportPeriod(weekly: weekly)
         let scope = ReportNotes.scope(weekly: weekly, end: period.end)
-        let groups = reportStories.map { (story: $0, rows: reportRows(for: $0, weekly: weekly)) }
+        return reportStories.map { (story: $0, rows: reportRows(for: $0, weekly: weekly)) }
             .filter { !$0.rows.isEmpty || ($0.story.sprint == nil && $0.story.stage != "done") || !scenario.speakingNotes[scope + ":story:" + $0.story.key, default: ""].isEmpty }
             .sorted {
                 let order = ["done": 0, "in-progress": 1, "planned": 2]
@@ -1106,6 +1188,11 @@ struct BudgetView: View {
                 let right = order[$1.story.stage, default: 3]
                 return left == right ? $0.story.key < $1.story.key : left < right
             }
+    }
+
+    private func taskActivity(weekly: Bool) -> some View {
+        let scope = ReportNotes.scope(weekly: weekly, end: reportPeriod(weekly: weekly).end)
+        let groups = reportGroups(weekly: weekly)
         let totalSpent = groups.flatMap(\.rows).reduce(0) { $0 + $1.spent }
         return VStack(alignment: .leading, spacing: 30) {
             HStack(spacing: reportColumnSpacing) {
@@ -1143,8 +1230,15 @@ struct BudgetView: View {
                                 reportTableRow(title: "Task / Progress", status: "Status", spent: "Spent", heading: true)
                                 Divider()
                                 ForEach(group.rows) { row in
+                                    let id = ReportRowID(story: group.story.key, task: row.id)
                                     reportTableRow(title: row.task.title, status: row.task.status,
                                                    spent: clock(row.spent), notes: row.notes)
+                                        .background {
+                                            if scenario.selectedReportRow == id {
+                                                RoundedRectangle(cornerRadius: 5).fill(Color.blue.opacity(0.32))
+                                            }
+                                        }
+                                        .id(id)
                                 }
                             }
                         }
@@ -1219,17 +1313,103 @@ struct BudgetView: View {
         .foregroundStyle(heading ? Color.secondary : Color.primary)
     }
 
+    private func unplannedView() -> some View {
+        reportShell(.unplanned, subtitle: "↑ ↓  Select    ← →  Switch view") {
+            if let error = scenario.unplannedError { Text(error).foregroundStyle(.orange) }
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("New item") {
+                        scenario.unplannedDraft = UnplannedItem(id: 0, date: .now, title: "",
+                                                                description: "", status: .open)
+                    }
+                    .keyboardShortcut("n", modifiers: .command)
+                    unplannedRow("ID", "Title", "Date", "Status").fontWeight(.semibold)
+                    Divider()
+                    ForEach(scenario.unplannedItems) { item in
+                        Button { scenario.selectedUnplanned = item.id } label: {
+                            unplannedRow("U-\(item.id)", item.title, item.date.formatted(date: .abbreviated, time: .omitted),
+                                         item.status.rawValue)
+                                .padding(.vertical, 5)
+                                .background {
+                                    if scenario.selectedUnplanned == item.id {
+                                        RoundedRectangle(cornerRadius: 5).fill(Color.blue.opacity(0.32))
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .id(item.id)
+                    }
+                    if scenario.unplannedItems.isEmpty { Text("—").foregroundStyle(.secondary) }
+                }
+                .frame(maxWidth: .infinity)
+                if let item = scenario.unplannedItems.first(where: { $0.id == scenario.selectedUnplanned }) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(item.title).font(.title2.bold())
+                        Text(item.description.isEmpty ? "—" : item.description).textSelection(.enabled)
+                        Button("Edit item") { scenario.unplannedDraft = item }
+                            .keyboardShortcut("e", modifiers: .command)
+                    }
+                    .frame(width: 310, alignment: .leading)
+                }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { scenario.unplannedDraft != nil },
+            set: { if !$0 { scenario.unplannedDraft = nil } }
+        )) {
+            if let draft = Binding($scenario.unplannedDraft) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(draft.wrappedValue.id == 0 ? "New unplanned item" : "Edit unplanned item").font(.title2.bold())
+                    TextField("Title", text: draft.title)
+                    DatePicker("Date", selection: draft.date, displayedComponents: .date)
+                    Picker("Status", selection: draft.status) {
+                        ForEach(UnplannedItem.Status.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    TextField("Description", text: draft.description, axis: .vertical).lineLimit(4...10)
+                    if let error = scenario.unplannedError { Text(error).foregroundStyle(.orange) }
+                    HStack {
+                        Button("Cancel") { scenario.unplannedDraft = nil }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button("Save", action: scenario.saveUnplanned).keyboardShortcut(.defaultAction)
+                            .disabled(draft.wrappedValue.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(24)
+                .frame(width: 440)
+            }
+        }
+    }
+
+    private func unplannedRow(_ id: String, _ title: String, _ date: String, _ status: String) -> some View {
+        HStack(spacing: 10) {
+            Text(id).monospacedDigit().frame(width: 58, alignment: .leading)
+            Text(title).frame(maxWidth: .infinity, alignment: .leading)
+            Text(date).frame(width: 100, alignment: .leading)
+            Text(status).frame(width: 95, alignment: .leading)
+        }
+        .font(.system(size: 15))
+    }
+
     private func reportShell<Content: View>(_ mode: BudgetMode, subtitle: String,
-                                            @ViewBuilder content: () -> Content) -> some View {
+                                            @ViewBuilder content: @escaping () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(mode.title).font(.system(size: 33, weight: .bold))
                 Text(subtitle).foregroundStyle(.secondary)
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) { content() }
-                    .frame(maxWidth: 1050, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .center)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) { content() }
+                        .frame(maxWidth: 1050, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .onChange(of: scenario.selectedReportRow) { _, id in
+                    if let id { proxy.scrollTo(id) }
+                }
+                .onChange(of: scenario.selectedUnplanned) { _, id in
+                    if mode == .unplanned, let id { proxy.scrollTo(id) }
+                }
             }
             Spacer(minLength: 0)
             Text("⌥" + mode.key.letter + "  Toggle    Esc  Close").font(.system(size: 15)).foregroundStyle(.secondary)
@@ -1435,7 +1615,27 @@ struct BudgetView: View {
         return true
     }
 
+    private func nextSelection<ID: Equatable>(_ ids: [ID], selected: ID?, step: Int) -> ID? {
+        guard !ids.isEmpty else { return nil }
+        guard let selected, let index = ids.firstIndex(of: selected) else {
+            return step > 0 ? ids.first : ids.last
+        }
+        return ids[(index + step + ids.count) % ids.count]
+    }
+
     func moveSelection(by step: Int) {
+        if scenario.mode == .unplanned {
+            scenario.selectedUnplanned = nextSelection(scenario.unplannedItems.map(\.id),
+                                                       selected: scenario.selectedUnplanned, step: step)
+            return
+        }
+        if scenario.mode == .daily || scenario.mode == .planning {
+            let ids = reportGroups(weekly: scenario.mode == .planning).flatMap { group in
+                group.rows.map { ReportRowID(story: group.story.key, task: $0.id) }
+            }
+            scenario.selectedReportRow = nextSelection(ids, selected: scenario.selectedReportRow, step: step)
+            return
+        }
         guard scenario.mode == .ticket else { return }
         let tasks = currentTasks
         let criteriaCount = scenario.ticket?.acceptanceCriteria.count ?? 0
@@ -1842,6 +2042,7 @@ final class BudgetWindow: NSWindow {
     var cancelEdit: (() -> Void)?
     var moveSelection: ((Int) -> Void)?
     var switchTab: ((Int) -> Void)?
+    var switchMode: ((Int) -> Void)?
     var copyStoryKey: (() -> Bool)?
     var toggleTaskDetails: (() -> Bool)?
 
@@ -1866,6 +2067,11 @@ final class BudgetWindow: NSWindow {
                 if copyStoryKey?() == true { return }
             case kVK_Space:
                 if !(firstResponder is NSTextView), !event.isARepeat, toggleTaskDetails?() == true { return }
+            case kVK_LeftArrow, kVK_RightArrow:
+                if !(firstResponder is NSTextView) {
+                    switchMode?(Int(event.keyCode) == kVK_LeftArrow ? -1 : 1)
+                    return
+                }
             case kVK_UpArrow:
                 if !(firstResponder is NSTextView) { moveSelection?(-1); return }
             case kVK_DownArrow:
@@ -1898,7 +2104,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.collectionBehavior = [.moveToActiveSpace]
         let budgetView = BudgetView()
         scenario = budgetView.scenario
-        panel.switchTab = budgetView.scenario.switchTab
+        panel.switchTab = { step in
+            if budgetView.scenario.mode == .unplanned { budgetView.moveSelection(by: step) }
+            else { budgetView.scenario.switchTab(step) }
+        }
+        panel.switchMode = { [weak self] step in
+            guard let self, let mode = self.scenario?.mode else { return }
+            let modes = BudgetMode.navigation
+            guard let index = modes.firstIndex(of: mode) else { return }
+            self.show(modes[(index + step + modes.count) % modes.count])
+        }
         panel.copyStoryKey = {
             let scenario = budgetView.scenario
             guard scenario.mode == .ticket, let key = scenario.ticket?.key else {
@@ -1944,7 +2159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let result = GetEventParameter(event, EventParamName(kEventParamDirectObject),
                                            EventParamType(typeEventHotKeyID), nil,
                                            MemoryLayout<EventHotKeyID>.size, nil, &id)
-            guard result == noErr, let mode = BudgetMode(rawValue: id.id == 4 ? BudgetMode.planning.rawValue : id.id) else {
+            guard result == noErr, let mode = BudgetMode(rawValue: id.id == 5 ? BudgetMode.planning.rawValue : id.id) else {
                 return OSStatus(eventNotHandledErr)
             }
             Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue().toggle(mode)
@@ -1965,7 +2180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var weeklyShortcut: EventHotKeyRef?
         if handler == noErr,
            RegisterEventHotKey(UInt32(kVK_ANSI_W), UInt32(optionKey),
-                EventHotKeyID(signature: 0x5A454954, id: 4),
+                EventHotKeyID(signature: 0x5A454954, id: 5),
                 GetApplicationEventTarget(), 0, &weeklyShortcut) == noErr,
            let weeklyShortcut {
             shortcuts.append(weeklyShortcut)
@@ -1973,7 +2188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             unavailable.append("⌥W")
         }
         status.button?.toolTip = unavailable.isEmpty ? "Sprint" : "Unavailable: " + unavailable.joined(separator: ", ")
-        NSLog("Sprint registered %d of 4 shortcuts", shortcuts.count)
+        NSLog("Sprint registered %d of 5 shortcuts", shortcuts.count)
         toggle(.ticket)
     }
 
@@ -1986,20 +2201,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if window.isVisible && window.isKeyWindow && scenario.mode == mode {
             window.orderOut(nil)
         } else {
-            if mode == .daily { scenario.dailyOffset = 0 }
-            scenario.reloadTicket(preferActive: mode == .ticket)
-            if mode != .ticket { scenario.reloadNotes() }
-            if scenario.mode != mode {
-                window.cancelEdit?()
-                scenario.mode = mode
-            }
-            if let screen = NSScreen.screens.first(where: { $0.localizedName.localizedCaseInsensitiveContains("U3225QE") })
-                ?? NSScreen.screens.first {
-                window.setFrame(screen.visibleFrame, display: false)
-            }
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
+            show(mode)
         }
+    }
+
+    private func show(_ mode: BudgetMode) {
+        guard let window, let scenario else { return }
+        if mode == .daily { scenario.dailyOffset = 0 }
+        scenario.selectedReportRow = nil
+        if mode == .unplanned { scenario.reloadUnplanned() }
+        scenario.reloadTicket(preferActive: mode == .ticket)
+        if mode != .ticket { scenario.reloadNotes() }
+        if scenario.mode != mode {
+            window.cancelEdit?()
+            scenario.mode = mode
+        }
+        if let screen = NSScreen.screens.first(where: { $0.localizedName.localizedCaseInsensitiveContains("U3225QE") })
+            ?? NSScreen.screens.first {
+            window.setFrame(screen.visibleFrame, display: false)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 }
 
