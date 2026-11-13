@@ -578,6 +578,7 @@ final class Scenario: ObservableObject {
             notesError = error.localizedDescription
         }
     }
+    @Published var selectedBudget: String?
     @Published var selectedCriterion: Int?
     @Published var expandedComments: Set<String> = []
     @Published var selectedTask: String?
@@ -604,6 +605,7 @@ final class Scenario: ObservableObject {
             editingTask = nil
             selectedTask = nil
             taskDetailsID = nil
+            selectedBudget = nil
             selectedCriterion = nil
             expandedComments = []
         }
@@ -671,6 +673,7 @@ struct BudgetView: View {
                 GeometryReader { layout in
                 let columnWidth = max(1, (layout.size.width - 65) / 2)
                 HStack(alignment: .top, spacing: 32) {
+                ScrollViewReader { proxy in
                 ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -710,21 +713,21 @@ struct BudgetView: View {
                     budgetTimeline(planned: planned, remaining: remaining, effort: effort, openTasks: openTasks, completed: scenario.ticket?.investedTasks ?? [], showForecast: scenario.ticket?.stage != "done")
                     Divider()
                     VStack(alignment: .leading, spacing: 5) {
-                        definition("📅", "Planned", clock(planned), "Story points × developer time per point.")
-                        definition("⏱️", "Spent", "−" + clock(planned - remaining), "Time already spent on the ticket.")
+                        budgetDefinition("📅", "Planned", clock(planned), "Story points × developer time per point.")
+                        budgetDefinition("⏱️", "Spent", "−" + clock(planned - remaining), "Time already spent on the ticket.")
                         Divider()
                         if scenario.ticket?.stage == "done" {
-                            definition(remaining < 0 ? "❗" : "✅", remaining < 0 ? "Overrun" : "Unused Budget",
+                            budgetDefinition(remaining < 0 ? "❗" : "✅", remaining < 0 ? "Overrun" : "Unused Budget",
                                        clock(abs(remaining)), "Difference between planned and spent at completion.",
                                        total: true, color: remaining < 0 ? .red : .green)
                         } else {
-                            definition("⌛", "Remaining budget", clock(remaining), "Planned time minus time spent.", total: true)
+                            budgetDefinition("⌛", "Remaining budget", clock(remaining), "Planned time minus time spent.", total: true)
                         }
                         if scenario.ticket?.stage != "done" {
-                        definition("🛠️", "Remaining effort", "−" + clock(effort), "Open estimates minus time already spent.")
+                        budgetDefinition("🛠️", "Remaining effort", "−" + clock(effort), "Open estimates minus time already spent.")
                         Divider()
                         let balance = remaining - effort
-                        definition(balance < 0 ? "🔴" : "🟢",
+                        budgetDefinition(balance < 0 ? "🔴" : "🟢",
                                    balance < 0 ? "Overrun" : "Buffer",
                                    (balance < 0 ? "−" : balance > 0 ? "+" : "") + clock(abs(balance)),
                                    balance < 0 ? "Estimated time shortfall." : "Estimated time left after completion.",
@@ -743,6 +746,10 @@ struct BudgetView: View {
 
                 }
                 .padding(.bottom, 24)
+                }
+                .onChange(of: scenario.selectedBudget) { _, metric in
+                    if let metric { proxy.scrollTo(metric) }
+                }
                 }
                 .frame(width: columnWidth, alignment: .topLeading)
                 Divider()
@@ -1301,6 +1308,8 @@ struct BudgetView: View {
                 HStack(spacing: 0) {
                     ForEach(Array(openTasks.enumerated()), id: \.offset) { index, task in
                         Button {
+                            scenario.selectedBudget = nil
+                            scenario.selectedCriterion = nil
                             scenario.selectedTask = scenario.selectedTask == task.id ? nil : task.id
                         } label: {
                             Rectangle()
@@ -1373,9 +1382,19 @@ struct BudgetView: View {
     private func intervalLabel(_ title: String, _ minutes: Int, from start: CGFloat, to end: CGFloat,
                                row: CGFloat, labelX: CGFloat, labelWidth: CGFloat,
                                color: Color = .secondary, above: Bool = false) -> some View {
-        if minutes != 0 {
+        let metric = String(title.split(separator: " ", maxSplits: 1).last ?? "")
+        let selected = scenario.selectedBudget == metric
+        let color = selected ? Color.cyan : color
+        if minutes != 0 || selected {
+            if selected {
+                RoundedRectangle(cornerRadius: 3)
+                    .strokeBorder(Color.cyan, lineWidth: 2)
+                    .frame(width: max(3, end - start), height: 20)
+                    .offset(x: start, y: 140)
+                    .allowsHitTesting(false)
+            }
             Rectangle().fill(color)
-                .frame(width: max(0, end - start), height: 1)
+                .frame(width: max(0, end - start), height: selected ? 3 : 1)
                 .offset(x: start, y: row)
             Rectangle().fill(color).frame(width: 1, height: 7).offset(x: start, y: row - 3)
             Rectangle().fill(color).frame(width: 1, height: 7).offset(x: end, y: row - 3)
@@ -1391,6 +1410,17 @@ struct BudgetView: View {
             .frame(width: max(0, halfLabel * 2))
             .position(x: min(max(labelX, halfLabel), plotWidth - halfLabel), y: row + (above ? -23 : 25))
         }
+    }
+
+    private func budgetDefinition(_ icon: String, _ term: String, _ value: String, _ meaning: String,
+                                  total: Bool = false, color: Color = .primary) -> some View {
+        definition(icon, term, value, meaning, total: total, color: color)
+            .background {
+                if scenario.selectedBudget == term {
+                    RoundedRectangle(cornerRadius: 5).fill(Color.blue.opacity(0.32))
+                }
+            }
+            .id(term)
     }
 
     private func definition(_ icon: String, _ term: String, _ value: String, _ meaning: String,
@@ -1433,15 +1463,27 @@ struct BudgetView: View {
         guard scenario.mode == .ticket, !scenario.showingStories else { return }
         let tasks = currentTasks
         let criteriaCount = scenario.ticket?.acceptanceCriteria.count ?? 0
-        let count = criteriaCount + tasks.count
+        let budget: [String]
+        if let ticket = scenario.ticket {
+            budget = ticket.stage == "done"
+                ? ["Planned", "Spent", ticket.remaining < 0 ? "Overrun" : "Unused Budget"]
+                : ["Planned", "Spent", "Remaining budget", "Remaining effort",
+                   ticket.remaining < ticket.effort ? "Overrun" : "Buffer"]
+        } else {
+            budget = []
+        }
+        let count = budget.count + criteriaCount + tasks.count
         guard count > 0 else { return }
-        let current = scenario.selectedCriterion
-            ?? tasks.firstIndex { $0.id == scenario.selectedTask }.map { $0 + criteriaCount }
+        let current = budget.firstIndex { $0 == scenario.selectedBudget }
+            ?? scenario.selectedCriterion.map { $0 + budget.count }
+            ?? tasks.firstIndex { $0.id == scenario.selectedTask }.map { $0 + budget.count + criteriaCount }
         let next = current.map { min(max($0 + step, 0), count - 1) }
             ?? (step > 0 ? 0 : count - 1)
         scenario.taskDetailsID = nil
-        scenario.selectedCriterion = next < criteriaCount ? next : nil
-        scenario.selectedTask = next < criteriaCount ? nil : tasks[next - criteriaCount].id
+        let detailIndex = next - budget.count
+        scenario.selectedBudget = detailIndex < 0 ? budget[next] : nil
+        scenario.selectedCriterion = (0..<criteriaCount).contains(detailIndex) ? detailIndex : nil
+        scenario.selectedTask = detailIndex < criteriaCount ? nil : tasks[detailIndex - criteriaCount].id
     }
 
     private struct StoryForecast {
@@ -1644,6 +1686,7 @@ struct BudgetView: View {
                 }
             } else {
                 Button(value.isEmpty ? "—" : value) {
+                    scenario.selectedBudget = nil
                     scenario.selectedCriterion = nil
                     scenario.selectedTask = task.id
                     scenario.draft = field == "Started" ? task.startedAt ?? "" :
@@ -1710,6 +1753,7 @@ struct BudgetView: View {
                 .foregroundStyle(spent > task.minutes ? Color.orange : Color.primary)
                 .help(spent > task.minutes ? "Above estimate by " + clock(spent - task.minutes) : "Time spent")
             Button {
+                scenario.selectedBudget = nil
                 scenario.selectedCriterion = nil
                 scenario.selectedTask = task.id
                 scenario.taskDetailsID = task.id
