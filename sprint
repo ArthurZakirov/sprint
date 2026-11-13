@@ -27,7 +27,8 @@ def main():
         if action == "create":
             command.add_argument("key")
         command.add_argument("--title", required=action == "create")
-        command.add_argument("--description")
+        command.add_argument("--why", "--description", dest="why")
+        command.add_argument("--remarks")
         command.add_argument("--story-status", dest="storyStatus", choices=("planned", "in-progress", "done"))
         command.add_argument("--past-sprint", dest="sprint", help="Archive label for a past sprint")
         command.add_argument("--story-points", type=int)
@@ -145,7 +146,6 @@ def main():
         if action == "view":
             result = run("show")
         elif action == "create":
-            fields.setdefault("description", "")
             fields.setdefault("acceptanceCriteria", [])
             result = run("ticket-create", fields)
         else:
@@ -170,12 +170,15 @@ def main():
     if data.get("storyPoints") is not None:
         print(f'{data["storyPoints"]} story points')
     print(f'{duration(int(result["minutesPerPoint"] + 0.5))} developer time per story point')
-    if data["description"]:
-        print(data["description"])
+    why = data.get("why", data.get("description"))
+    if why:
+        print(f"Why: {why}")
     for index, criterion in enumerate(data["acceptanceCriteria"], 1):
         print(f"  AC-{index}  {criterion}")
     for comment in data.get("criterionComments", []):
         print(f'  {comment["criterion"]} · {comment["quote"]} [{comment["kind"]}]: {comment["body"]}')
+    if data.get("remarks"):
+        print(f'Remarks: {data["remarks"]}')
     states = {state["id"]: state for state in result["taskStates"]}
     for task_data in data.get("tasks", []):
         status = states[task_data["id"]]["status"]

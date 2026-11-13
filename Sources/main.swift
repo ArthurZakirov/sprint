@@ -66,7 +66,9 @@ struct LocalTicket: Codable {
     var key: String
     var title: String
     var storyPoints: Int?
-    var description: String
+    var description: String?
+    var why: String?
+    var remarks: String?
     var acceptanceCriteria: [String]
     var criterionComments: [CriterionComment]?
     var unplannedReserveMinutes: Int?
@@ -351,6 +353,8 @@ enum TicketStore {
                     struct Patch: Decodable {
                         let title: String?
                         let description: String?
+                        let why: String?
+                        let remarks: String?
                         let storyPoints: Int?
                         let acceptanceCriteria: [String]?
                         let unplannedReserveMinutes: Int?
@@ -368,6 +372,8 @@ enum TicketStore {
                     current.sprint = patch.sprint ?? current.sprint
                     current.title = patch.title ?? current.title
                     current.description = patch.description ?? current.description
+                    current.why = patch.why ?? patch.description ?? current.why
+                    current.remarks = patch.remarks ?? current.remarks
                     current.storyPoints = patch.storyPoints ?? current.storyPoints
                     current.acceptanceCriteria = patch.acceptanceCriteria ?? current.acceptanceCriteria
                     current.unplannedReserveMinutes = patch.unplannedReserveMinutes ?? current.unplannedReserveMinutes
@@ -587,8 +593,6 @@ final class Scenario: ObservableObject {
     @Published var ticketReadError: String?
 
     @Published var stories: [LocalTicket] = []
-    @Published var storySearch = ""
-    @Published var showingStories = false
     var ticketURL: URL?
 
     func reloadTicket(preferActive: Bool = false, key: String? = nil) {
@@ -636,7 +640,6 @@ final class Scenario: ObservableObject {
 
 struct BudgetView: View {
     @ObservedObject var scenario = Scenario()
-    let dismiss: () -> Void
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
@@ -655,15 +658,7 @@ struct BudgetView: View {
             let atRisk = forecast.map { $0.margin < 0 } ?? false
             let tone: Color = atRisk ? .red : .green
             VStack(alignment: .leading, spacing: 22) {
-                HStack(spacing: 14) {
-                    Label("Ticket Decision", systemImage: "scope")
-                        .font(.system(size: 15, weight: .semibold))
-                        .fixedSize()
-                    storyBar
-                    Button(action: dismiss) { Image(systemName: "xmark") }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Close window")
-                }
+                storyBar
                 .padding(.horizontal, 10)
                 .frame(height: 106)
                 .background(Color(red: 0.15, green: 0.18, blue: 0.23), in: RoundedRectangle(cornerRadius: 6))
@@ -760,10 +755,10 @@ struct BudgetView: View {
                         Text(ticket.title).font(.system(size: 33, weight: .bold)).lineLimit(2)
                         Text(ticket.key + (ticket.storyPoints.map { "  ·  \($0) Story Points" } ?? ""))
                             .foregroundStyle(.secondary)
-                        Text("Description").font(.system(size: 19, weight: .semibold))
-                        Text(ticket.description).font(.system(size: 17)).textSelection(.enabled)
+                        Text("Why").font(.system(size: 19, weight: .semibold))
+                        Text(ticket.why ?? ticket.description ?? "—").font(.system(size: 17)).textSelection(.enabled)
                         HStack {
-                            Text("Acceptance criteria").font(.system(size: 19, weight: .semibold))
+                            Text("Acceptance Criteria").font(.system(size: 19, weight: .semibold))
                             Spacer()
                             let ids = Set((ticket.criterionComments ?? []).map(\.id))
                             if !ids.isEmpty {
@@ -785,6 +780,8 @@ struct BudgetView: View {
                             Text("Comments on changed criteria").font(.system(size: 15, weight: .semibold))
                             ForEach(unmatched) { comment in commentCard(comment) }
                         }
+                        Text("Remarks").font(.system(size: 19, weight: .semibold))
+                        Text(ticket.remarks ?? "—").font(.system(size: 17)).textSelection(.enabled)
                 VStack(alignment: .leading, spacing: 10) {
                     Divider().padding(.bottom, 6)
                     Text("Progress").font(.system(size: 19, weight: .semibold))
@@ -857,38 +854,7 @@ struct BudgetView: View {
                     }
                 }
             }
-            Button("All stories") { scenario.showingStories.toggle() }
-                .popover(isPresented: $scenario.showingStories) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        TextField("Search stories", text: $scenario.storySearch)
-                        let matches = scenario.stories.filter {
-                            scenario.storySearch.isEmpty ||
-                                ($0.key + " " + $0.title).localizedCaseInsensitiveContains(scenario.storySearch)
-                        }
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 10) {
-                                ForEach(["This sprint", "Past sprints"], id: \.self) { group in
-                                    let items = matches.filter { group == "This sprint" ? $0.sprint == nil : $0.sprint != nil }
-                                    if !items.isEmpty {
-                                        Text(group).font(.headline)
-                                        ForEach(items, id: \.key) { story in
-                                            Button {
-                                                scenario.reloadTicket(key: story.key)
-                                                scenario.showingStories = false
-                                            } label: {
-                                                storyTabLabel(story)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    .padding(16)
-                    .frame(width: 470, height: 330)
-                }
+
         }
     }
 
@@ -1241,11 +1207,6 @@ struct BudgetView: View {
     private func reportShell<Content: View>(_ mode: BudgetMode, subtitle: String,
                                             @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Spacer()
-                Button(action: dismiss) { Image(systemName: "xmark") }
-                    .buttonStyle(.borderless).accessibilityLabel("Close window")
-            }
             VStack(alignment: .leading, spacing: 6) {
                 Text(mode.title).font(.system(size: 33, weight: .bold))
                 Text(subtitle).foregroundStyle(.secondary)
@@ -1440,7 +1401,7 @@ struct BudgetView: View {
     }
 
     func toggleSelectedDetails() -> Bool {
-        guard scenario.mode == .ticket, !scenario.showingStories else { return false }
+        guard scenario.mode == .ticket else { return false }
         if let index = scenario.selectedCriterion, let ticket = scenario.ticket,
            ticket.acceptanceCriteria.indices.contains(index) {
             let ids = Set(anchoredComments(ticket.acceptanceCriteria[index], index: index,
@@ -1460,7 +1421,7 @@ struct BudgetView: View {
     }
 
     func moveSelection(by step: Int) {
-        guard scenario.mode == .ticket, !scenario.showingStories else { return }
+        guard scenario.mode == .ticket else { return }
         let tasks = currentTasks
         let criteriaCount = scenario.ticket?.acceptanceCriteria.count ?? 0
         let budget: [String]
@@ -1920,12 +1881,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isMovableByWindowBackground = false
         panel.level = .floating
         panel.collectionBehavior = [.moveToActiveSpace]
-        let budgetView = BudgetView { [weak panel] in panel?.orderOut(nil) }
+        let budgetView = BudgetView()
         scenario = budgetView.scenario
         panel.switchTab = budgetView.scenario.switchTab
         panel.copyStoryKey = {
             let scenario = budgetView.scenario
-            guard scenario.mode == .ticket, !scenario.showingStories, let key = scenario.ticket?.key else {
+            guard scenario.mode == .ticket, let key = scenario.ticket?.key else {
                 return false
             }
             let clipboard = NSPasteboard.general
