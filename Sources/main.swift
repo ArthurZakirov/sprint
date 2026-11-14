@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Carbon
+import UserNotifications
 
 enum BudgetMode: UInt32, CaseIterable {
     case ticket = 1, daily, planning, unplanned, settings = 6
@@ -2631,7 +2632,89 @@ final class BudgetWindow: NSWindow {
     override func cancelOperation(_ sender: Any?) { orderOut(nil) }
 }
 
+final class BudgetNotifications: NSObject, UNUserNotificationCenterDelegate {
+    private let center = UNUserNotificationCenter.current()
+    private let stateKey = "notifiedBudgetOverruns"
+    private var timer: Timer?
+    private var pending = Set<String>()
+
+    func start() {
+        center.delegate = self
+        requestPermission { [weak self] in self?.check() }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.check()
+        }
+    }
+
+    func test() {
+        requestPermission { [weak self] in
+            self?.post(title: "Sprint: Budget warning test",
+                       body: "Example story needs 2h more. Check with your team whether scope or budget should change.") { _ in }
+        }
+    }
+
+    private func requestPermission(_ granted: @escaping () -> Void) {
+        center.requestAuthorization(options: [.alert, .sound]) { allowed, error in
+            if let error { NSLog("Sprint notification permission: %@", error.localizedDescription) }
+            if allowed { DispatchQueue.main.async(execute: granted) }
+        }
+    }
+
+    private func check() {
+        let tickets = TicketStore.registry().map(\.ticket)
+        let open = tickets.filter { $0.stage != "done" && $0.sprint == nil && $0.storyPoints != nil }
+        let overruns = open.filter { $0.effort > $0.remaining }
+        let restored = Set(open.filter { $0.effort <= $0.remaining }.map(\.key))
+        let closed = Set(tickets.filter { $0.stage == "done" || $0.sprint != nil }.map(\.key))
+        let acknowledged = Set(SprintPreferences.store.stringArray(forKey: stateKey) ?? [])
+        let current = acknowledged.subtracting(restored.union(closed))
+        if current != acknowledged { SprintPreferences.store.set(current.sorted(), forKey: stateKey) }
+        center.getNotificationSettings { [weak self] settings in
+            guard settings.authorizationStatus == .authorized else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.notify(overruns)
+            }
+        }
+    }
+
+    private func notify(_ overruns: [LocalTicket]) {
+        for ticket in overruns {
+            guard !(SprintPreferences.store.stringArray(forKey: stateKey) ?? []).contains(ticket.key),
+                  pending.insert(ticket.key).inserted else { continue }
+            let minutes = ticket.effort - ticket.remaining
+            let duration = String(format: "%dh %02dm", minutes / 60, minutes % 60)
+            post(title: "Overrun: " + ticket.title,
+                 body: "\(ticket.key) is forecast to exceed its budget by \(duration). Check with your team whether scope or budget should change.") { [weak self] success in
+                guard let self else { return }
+                self.pending.remove(ticket.key)
+                if success {
+                    var keys = Set(SprintPreferences.store.stringArray(forKey: self.stateKey) ?? [])
+                    keys.insert(ticket.key)
+                    SprintPreferences.store.set(keys.sorted(), forKey: self.stateKey)
+                }
+            }
+        }
+    }
+
+    private func post(title: String, body: String, completion: @escaping (Bool) -> Void) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { error in
+            if let error { NSLog("Sprint could not add notification: %@", error.localizedDescription) }
+            DispatchQueue.main.async { completion(error == nil) }
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let budgetNotifications = BudgetNotifications()
     var window: BudgetWindow?
     var menuItem: NSStatusItem?
     var shortcuts: [EventHotKeyRef] = []
@@ -2713,6 +2796,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.tag = Int(mode.rawValue)
             item.target = self
         }
+        let testNotification = menu.addItem(withTitle: "Send Test Budget Notification",
+                                            action: #selector(sendTestBudgetNotification), keyEquivalent: "")
+        testNotification.target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Sprint", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         status.menu = menu
@@ -2755,8 +2841,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         status.button?.toolTip = unavailable.isEmpty ? "Sprint" : "Unavailable: " + unavailable.joined(separator: ", ")
         NSLog("Sprint registered %d of 5 shortcuts", shortcuts.count)
+        budgetNotifications.start()
+        if CommandLine.arguments.contains("--test-budget-notification") { budgetNotifications.test() }
         if !CommandLine.arguments.contains("--background") { toggle(.ticket) }
     }
+
+    @objc private func sendTestBudgetNotification() { budgetNotifications.test() }
 
     @objc private func openMode(_ item: NSMenuItem) {
         if let mode = BudgetMode(rawValue: UInt32(item.tag)) { toggle(mode) }
@@ -2794,7 +2884,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-if CommandLine.arguments.count > 1 && Array(CommandLine.arguments.dropFirst()) != ["--background"] {
+if CommandLine.arguments.count > 1 && !CommandLine.arguments.dropFirst().allSatisfy({ ["--background", "--test-budget-notification"].contains($0) }) {
     do {
         let args = Array(CommandLine.arguments.dropFirst())
         if args.first == "reference-add" {
