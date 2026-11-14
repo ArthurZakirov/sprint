@@ -2755,7 +2755,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         status.button?.toolTip = unavailable.isEmpty ? "Sprint" : "Unavailable: " + unavailable.joined(separator: ", ")
         NSLog("Sprint registered %d of 5 shortcuts", shortcuts.count)
-        toggle(.ticket)
+        if !CommandLine.arguments.contains("--background") { toggle(.ticket) }
     }
 
     @objc private func openMode(_ item: NSMenuItem) {
@@ -2794,7 +2794,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-if CommandLine.arguments.count > 1 {
+if CommandLine.arguments.count > 1 && Array(CommandLine.arguments.dropFirst()) != ["--background"] {
     do {
         let args = Array(CommandLine.arguments.dropFirst())
         if args.first == "reference-add" {

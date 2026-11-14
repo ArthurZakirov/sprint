@@ -15,3 +15,4 @@ install: build
 	mkdir -p "$(HOME)/Applications" "$(HOME)/.local/bin"
 	ditto "$(APP)" "$(HOME)/Applications/Sprint.app"
 	install -m 755 sprint "$(HOME)/.local/bin/sprint"
+	/bin/bash scripts/install-login-agent.sh "$(HOME)/Applications/Sprint.app/Contents/MacOS/Sprint"
