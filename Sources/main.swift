@@ -1986,7 +1986,7 @@ struct BudgetView: View {
                         .frame(width: scale * Double(completed[index].minutes), height: 16)
                         .offset(x: start + scale * Double(completed.prefix(index).reduce(0) { $0 + $1.minutes }), y: 142)
                 }
-                if !showForecast && remaining < 0 {
+                if remaining < 0 {
                     Rectangle().fill(.red)
                         .frame(width: now - budgetEnd, height: 16)
                         .offset(x: budgetEnd, y: 142)
@@ -2048,7 +2048,7 @@ struct BudgetView: View {
                 let middle = geometry.size.width / 2
                 intervalLabel("📅 Planned", planned, from: start, to: budgetEnd, row: 42,
                               labelX: (start + budgetEnd) / 2, labelWidth: middle, above: true)
-                if remaining >= 0 || showForecast {
+                if remaining >= 0 {
                     intervalLabel(showForecast ? "⌛ Remaining budget" : "✅ Unused Budget",
                                   remaining, from: min(now, budgetEnd), to: max(now, budgetEnd),
                                   row: 94, labelX: (now + budgetEnd) / 2, labelWidth: middle,
