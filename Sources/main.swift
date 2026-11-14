@@ -1113,6 +1113,15 @@ struct BudgetView: View {
                 }
                 TextField("Ticket reminder percentages", text: $ticketReminderPercentages)
                 Toggle("Sprint deadline reminders", isOn: $sprintRemindersEnabled)
+                    .onChange(of: sprintRemindersEnabled) { _, enabled in
+                        guard enabled else { return }
+                        if SprintPreferences.store.object(forKey: "sprintReminderStart") == nil {
+                            sprintReminderStart = Date().timeIntervalSince1970
+                        }
+                        if SprintPreferences.store.object(forKey: "sprintReminderEnd") == nil {
+                            sprintReminderEnd = Date().addingTimeInterval(7 * 86400).timeIntervalSince1970
+                        }
+                    }
                 if sprintRemindersEnabled {
                     DatePicker("Sprint starts", selection: dateBinding($sprintReminderStart))
                     DatePicker("Sprint ends", selection: dateBinding($sprintReminderEnd))
