@@ -111,6 +111,7 @@ struct LocalTicket: Codable {
     var storyStatus: String?
     var sprint: String?
     var lastWorkedAt: String?
+    var budgetStartedAt: String?
 
     var stage: String {
         storyStatus ?? ((tasks ?? []).contains { $0.startedAt != nil } ? "in-progress" : "planned")
@@ -161,6 +162,7 @@ struct LocalTicket: Codable {
             tasks?[index].included = true
             storyStatus = "in-progress"
             lastWorkedAt = stamp
+            budgetStartedAt = budgetStartedAt ?? stamp
         }
     }
 
@@ -339,6 +341,9 @@ enum TicketStore {
                     guard existing == nil else { throw failure("An active ticket already exists. Use sprint ticket edit.") }
                     var incoming = try decoder.decode(LocalTicket.self, from: input)
                     incoming.tasks = []
+                    if incoming.stage == "in-progress" {
+                        incoming.budgetStartedAt = ISO8601DateFormatter().string(from: Date())
+                    }
                     existing = incoming
                     return
                 }
@@ -399,7 +404,11 @@ enum TicketStore {
                     if let stage = patch.storyStatus {
                         guard ["planned", "in-progress", "done"].contains(stage) else { throw failure("Invalid story status.") }
                         if stage != "in-progress" { current.pause(at: Date()) }
-                        else { current.lastWorkedAt = ISO8601DateFormatter().string(from: Date()) }
+                        else {
+                            let stamp = ISO8601DateFormatter().string(from: Date())
+                            current.lastWorkedAt = stamp
+                            current.budgetStartedAt = current.budgetStartedAt ?? stamp
+                        }
                         current.storyStatus = stage
                     }
                     current.sprint = patch.sprint ?? current.sprint
@@ -2673,6 +2682,50 @@ final class BudgetNotifications: NSObject, UNUserNotificationCenterDelegate {
             guard settings.authorizationStatus == .authorized else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.notify(overruns)
+                self?.notifyElapsedBudget(open)
+            }
+        }
+    }
+
+    private func elapsedWorkMinutes(from start: Date, to end: Date) -> Int {
+        guard start < end else { return 0 }
+        let calendar = Calendar.current
+        var day = calendar.startOfDay(for: start)
+        var seconds: TimeInterval = 0
+        while day < end {
+            if !calendar.isDateInWeekend(day) {
+                for (opening, closing) in [(540, 720), (765, 1065)] {
+                    guard let from = calendar.date(bySettingHour: opening / 60, minute: opening % 60, second: 0, of: day),
+                          let to = calendar.date(bySettingHour: closing / 60, minute: closing % 60, second: 0, of: day) else { continue }
+                    seconds += max(0, min(end, to).timeIntervalSince(max(start, from)))
+                }
+            }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        return Int(seconds / 60)
+    }
+
+    private func notifyElapsedBudget(_ tickets: [LocalTicket]) {
+        let formatter = ISO8601DateFormatter()
+        let now = Date()
+        let key = "notifiedElapsedTicketBudget"
+        for ticket in tickets where ticket.stage == "in-progress" && ticket.planned > 0 {
+            guard let raw = ticket.budgetStartedAt, let start = formatter.date(from: raw) else { continue }
+            let elapsed = elapsedWorkMinutes(from: start, to: now)
+            guard let threshold = [80, 50].first(where: { Double(elapsed) / Double(ticket.planned) >= Double($0) / 100 }) else { continue }
+            let id = "elapsed:" + ticket.key + ":" + raw
+            let notified = SprintPreferences.store.dictionary(forKey: key)?[id] as? Int ?? 0
+            guard threshold > notified, pending.insert(id).inserted else { continue }
+            post(title: "Sprint: " + ticket.key + " · " + ticket.title,
+                 body: "\(elapsed) of \(ticket.planned) planned workday minutes have elapsed since you started this story. Does the remaining scope still fit?") { [weak self] success in
+                guard let self else { return }
+                self.pending.remove(id)
+                if success {
+                    var recorded = SprintPreferences.store.dictionary(forKey: key) ?? [:]
+                    recorded[id] = threshold
+                    SprintPreferences.store.set(recorded, forKey: key)
+                }
             }
         }
     }
