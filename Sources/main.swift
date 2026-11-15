@@ -359,6 +359,7 @@ enum TicketStore {
                     guard existing == nil || existing?.key == incoming.key || args == ["ticket-set", "--replace"] else {
                         throw failure("This file already holds a different ticket. Use ticket-set --replace to replace it explicitly.")
                     }
+                    incoming.budgetStartedAt = incoming.budgetStartedAt ?? (existing?.key == incoming.key ? existing?.budgetStartedAt : nil)
                     incoming.tasks = incoming.tasks ?? []
                     existing = incoming
                     return
@@ -2777,7 +2778,11 @@ final class BudgetNotifications: NSObject, UNUserNotificationCenterDelegate {
         ) else { return }
         let key = "notifiedElapsedTicketBudget"
         for ticket in tickets where ticket.stage == "in-progress" && ticket.planned > 0 {
-            guard let raw = ticket.budgetStartedAt, let start = formatter.date(from: raw) else { continue }
+            let firstTaskStart = (ticket.tasks ?? []).compactMap {
+                $0.startedAt.flatMap { formatter.date(from: $0) }
+            }.min()
+            guard let start = ticket.budgetStartedAt.flatMap({ formatter.date(from: $0) }) ?? firstTaskStart else { continue }
+            let raw = formatter.string(from: start)
             let elapsed = elapsedWorkMinutes(from: start, to: now)
             guard let threshold = percentages.first(where: { Double(elapsed) / Double(ticket.planned) >= Double($0) / 100 }) else { continue }
             let id = "elapsed:" + ticket.key + ":" + raw
