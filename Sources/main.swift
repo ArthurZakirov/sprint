@@ -111,6 +111,7 @@ struct LocalTicket: Codable {
     var storyStatus: String?
     var sprint: String?
     var lastWorkedAt: String?
+    var budgetStartedAt: String?
 
     var stage: String {
         storyStatus ?? ((tasks ?? []).contains { $0.startedAt != nil } ? "in-progress" : "planned")
@@ -161,6 +162,7 @@ struct LocalTicket: Codable {
             tasks?[index].included = true
             storyStatus = "in-progress"
             lastWorkedAt = stamp
+            budgetStartedAt = budgetStartedAt ?? stamp
         }
     }
 
@@ -339,6 +341,9 @@ enum TicketStore {
                     guard existing == nil else { throw failure("An active ticket already exists. Use sprint ticket edit.") }
                     var incoming = try decoder.decode(LocalTicket.self, from: input)
                     incoming.tasks = []
+                    if incoming.stage == "in-progress" {
+                        incoming.budgetStartedAt = ISO8601DateFormatter().string(from: Date())
+                    }
                     existing = incoming
                     return
                 }
@@ -354,6 +359,7 @@ enum TicketStore {
                     guard existing == nil || existing?.key == incoming.key || args == ["ticket-set", "--replace"] else {
                         throw failure("This file already holds a different ticket. Use ticket-set --replace to replace it explicitly.")
                     }
+                    incoming.budgetStartedAt = incoming.budgetStartedAt ?? (existing?.key == incoming.key ? existing?.budgetStartedAt : nil)
                     incoming.tasks = incoming.tasks ?? []
                     existing = incoming
                     return
@@ -399,7 +405,11 @@ enum TicketStore {
                     if let stage = patch.storyStatus {
                         guard ["planned", "in-progress", "done"].contains(stage) else { throw failure("Invalid story status.") }
                         if stage != "in-progress" { current.pause(at: Date()) }
-                        else { current.lastWorkedAt = ISO8601DateFormatter().string(from: Date()) }
+                        else {
+                            let stamp = ISO8601DateFormatter().string(from: Date())
+                            current.lastWorkedAt = stamp
+                            current.budgetStartedAt = current.budgetStartedAt ?? stamp
+                        }
                         current.storyStatus = stage
                     }
                     current.sprint = patch.sprint ?? current.sprint
@@ -1070,6 +1080,17 @@ struct BudgetView: View {
         }
     }
 
+    @AppStorage("workdayHours", store: SprintPreferences.store) private var workdayHours = "09:00-12:00,12:45-17:45"
+    @AppStorage("ticketReminderPercentages", store: SprintPreferences.store) private var ticketReminderPercentages = "50,80"
+    @AppStorage("sprintRemindersEnabled", store: SprintPreferences.store) private var sprintRemindersEnabled = false
+    @AppStorage("sprintReminderStart", store: SprintPreferences.store) private var sprintReminderStart = Date().timeIntervalSince1970
+    @AppStorage("sprintReminderEnd", store: SprintPreferences.store) private var sprintReminderEnd = Date().addingTimeInterval(7 * 86400).timeIntervalSince1970
+
+    private func dateBinding(_ value: Binding<Double>) -> Binding<Date> {
+        Binding(get: { Date(timeIntervalSince1970: value.wrappedValue) },
+                set: { value.wrappedValue = $0.timeIntervalSince1970 })
+    }
+
     private func settingsView() -> some View {
         reportShell(.settings, subtitle: "") {
             let target = scenario.pointTarget > 0 ? scenario.pointTarget : scenario.ticket?.target ?? 4
@@ -1085,6 +1106,30 @@ struct BudgetView: View {
                 TextField("https://jira.example.com", text: $scenario.jiraURL)
                 Text("Tickets Folder")
                 TextField("~/tickets", text: $scenario.ticketsDirectory)
+                Divider()
+                Text("Workday reminders").font(.headline)
+                TextField("Weekday hours (HH:mm-HH:mm, …)", text: $workdayHours)
+                if WorkdayReminder.windows(workdayHours) == nil {
+                    Text("Enter ordered, non-overlapping work windows.").foregroundStyle(.red)
+                }
+                TextField("Ticket reminder percentages", text: $ticketReminderPercentages)
+                Toggle("Sprint deadline reminders", isOn: $sprintRemindersEnabled)
+                    .onChange(of: sprintRemindersEnabled) { _, enabled in
+                        guard enabled else { return }
+                        if SprintPreferences.store.object(forKey: "sprintReminderStart") == nil {
+                            sprintReminderStart = Date().timeIntervalSince1970
+                        }
+                        if SprintPreferences.store.object(forKey: "sprintReminderEnd") == nil {
+                            sprintReminderEnd = Date().addingTimeInterval(7 * 86400).timeIntervalSince1970
+                        }
+                    }
+                if sprintRemindersEnabled {
+                    DatePicker("Sprint starts", selection: dateBinding($sprintReminderStart))
+                    DatePicker("Sprint ends", selection: dateBinding($sprintReminderEnd))
+                    if sprintReminderEnd <= sprintReminderStart {
+                        Text("Sprint end must be after its start.").foregroundStyle(.red)
+                    }
+                }
             }
             .frame(maxWidth: 600)
         }
@@ -2632,6 +2677,32 @@ final class BudgetWindow: NSWindow {
     override func cancelOperation(_ sender: Any?) { orderOut(nil) }
 }
 
+private enum WorkdayReminder {
+    static func windows(_ text: String) -> [(Int, Int)]? {
+        func minute(_ raw: Substring) -> Int? {
+            let parts = raw.trimmingCharacters(in: .whitespaces).split(separator: ":")
+            guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+                  (0...24).contains(hour), (0..<60).contains(minute), hour < 24 || minute == 0 else { return nil }
+            return hour * 60 + minute
+        }
+        var windows: [(Int, Int)] = []
+        for window in text.split(separator: ",", omittingEmptySubsequences: false) {
+            let parts = window.split(separator: "-", omittingEmptySubsequences: false)
+            guard parts.count == 2, let start = minute(parts[0]), let end = minute(parts[1]),
+                  start >= (windows.last?.1 ?? 0), end > start else { return nil }
+            windows.append((start, end))
+        }
+        return windows.isEmpty ? nil : windows
+    }
+
+    static func percentages(_ text: String) -> [Int]? {
+        let parts = text.split(separator: ",", omittingEmptySubsequences: false)
+        let percentages = parts.compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard percentages.count == parts.count, percentages.allSatisfy({ (1...100).contains($0) }) else { return nil }
+        return Set(percentages).sorted(by: >)
+    }
+}
+
 final class BudgetNotifications: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     private let stateKey = "notifiedBudgetOverruns"
@@ -2673,6 +2744,85 @@ final class BudgetNotifications: NSObject, UNUserNotificationCenterDelegate {
             guard settings.authorizationStatus == .authorized else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.notify(overruns)
+                self?.notifyElapsedBudget(open)
+                self?.notifySprintDeadline()
+            }
+        }
+    }
+
+    private func elapsedWorkMinutes(from start: Date, to end: Date) -> Int {
+        guard start < end,
+              let windows = WorkdayReminder.windows(SprintPreferences.store.string(forKey: "workdayHours") ?? "09:00-12:00,12:45-17:45") else { return 0 }
+        let calendar = Calendar.current
+        var day = calendar.startOfDay(for: start)
+        var seconds: TimeInterval = 0
+        while day < end {
+            if !calendar.isDateInWeekend(day) {
+                for (opening, closing) in windows {
+                    guard let from = calendar.date(bySettingHour: opening / 60, minute: opening % 60, second: 0, of: day),
+                          let to = closing == 1440 ? calendar.date(byAdding: .day, value: 1, to: day) : calendar.date(bySettingHour: closing / 60, minute: closing % 60, second: 0, of: day) else { continue }
+                    seconds += max(0, min(end, to).timeIntervalSince(max(start, from)))
+                }
+            }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        return Int(seconds / 60)
+    }
+
+    private func notifyElapsedBudget(_ tickets: [LocalTicket]) {
+        let formatter = ISO8601DateFormatter()
+        let now = Date()
+        guard let percentages = WorkdayReminder.percentages(
+            SprintPreferences.store.string(forKey: "ticketReminderPercentages") ?? "50,80"
+        ) else { return }
+        let key = "notifiedElapsedTicketBudget"
+        for ticket in tickets where ticket.stage == "in-progress" && ticket.planned > 0 {
+            let firstTaskStart = (ticket.tasks ?? []).compactMap {
+                $0.startedAt.flatMap { formatter.date(from: $0) }
+            }.min()
+            guard let start = ticket.budgetStartedAt.flatMap({ formatter.date(from: $0) }) ?? firstTaskStart else { continue }
+            let raw = formatter.string(from: start)
+            let elapsed = elapsedWorkMinutes(from: start, to: now)
+            guard let threshold = percentages.first(where: { Double(elapsed) / Double(ticket.planned) >= Double($0) / 100 }) else { continue }
+            let id = "elapsed:" + ticket.key + ":" + raw
+            let notified = SprintPreferences.store.dictionary(forKey: key)?[id] as? Int ?? 0
+            guard threshold > notified, pending.insert(id).inserted else { continue }
+            post(title: "Sprint: " + ticket.key + " · " + ticket.title,
+                 body: "\(elapsed) of \(ticket.planned) planned workday minutes have elapsed since you started this story. Does the remaining scope still fit?") { [weak self] success in
+                guard let self else { return }
+                self.pending.remove(id)
+                if success {
+                    var recorded = SprintPreferences.store.dictionary(forKey: key) ?? [:]
+                    recorded[id] = threshold
+                    SprintPreferences.store.set(recorded, forKey: key)
+                }
+            }
+        }
+    }
+
+    private func notifySprintDeadline() {
+        let store = SprintPreferences.store
+        guard store.bool(forKey: "sprintRemindersEnabled") else { return }
+        let start = Date(timeIntervalSince1970: store.double(forKey: "sprintReminderStart"))
+        let end = Date(timeIntervalSince1970: store.double(forKey: "sprintReminderEnd"))
+        let now = Date()
+        guard start <= now, now < end else { return }
+        let total = elapsedWorkMinutes(from: start, to: end)
+        let remaining = elapsedWorkMinutes(from: now, to: end)
+        guard total > 0 else { return }
+        let threshold = remaining <= min(480, total / 2) ? 2 : (remaining <= total / 2 ? 1 : 0)
+        let id = "deadline:\(start.timeIntervalSince1970):\(end.timeIntervalSince1970)"
+        let key = "notifiedSprintDeadline"
+        guard threshold > (store.dictionary(forKey: key)?[id] as? Int ?? 0),
+              pending.insert(id).inserted else { return }
+        post(title: threshold == 2 ? "Sprint: Final workday" : "Sprint: Halfway point",
+             body: "\(remaining / 60)h \(remaining % 60)m of scheduled work time remain before the sprint ends. Does the remaining scope fit?") { [weak self] success in
+            self?.pending.remove(id)
+            if success {
+                var recorded = store.dictionary(forKey: key) ?? [:]
+                recorded[id] = threshold
+                store.set(recorded, forKey: key)
             }
         }
     }
