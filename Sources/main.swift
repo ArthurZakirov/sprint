@@ -2979,18 +2979,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 unavailable.append("⌥" + mode.key.letter)
             }
         }
-        var weeklyShortcut: EventHotKeyRef?
-        if handler == noErr,
-           RegisterEventHotKey(UInt32(kVK_ANSI_W), UInt32(optionKey),
-                EventHotKeyID(signature: 0x5A454954, id: 5),
-                GetApplicationEventTarget(), 0, &weeklyShortcut) == noErr,
-           let weeklyShortcut {
-            shortcuts.append(weeklyShortcut)
-        } else {
-            unavailable.append("⌥W")
-        }
         status.button?.toolTip = unavailable.isEmpty ? "Sprint" : "Unavailable: " + unavailable.joined(separator: ", ")
-        NSLog("Sprint registered %d of 5 shortcuts", shortcuts.count)
+        NSLog("Sprint registered %d shortcuts", shortcuts.count)
         budgetNotifications.start()
         if CommandLine.arguments.contains("--test-budget-notification") { budgetNotifications.test() }
         if !CommandLine.arguments.contains("--background") { toggle(.ticket) }
