@@ -878,6 +878,8 @@ struct BudgetView: View {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(alignment: .top, spacing: 18) {
                     Text("Story").font(viewTitleFont)
+                    Button("Close") { NSApp.keyWindow?.orderOut(nil) }
+                        .help("Close Sprint window (⌘W). Quit Sprint with ⌘Q.")
                     storyBar
                         .padding(.horizontal, 10)
                         .frame(height: 106)
@@ -958,6 +960,27 @@ struct BudgetView: View {
                         if focus != .progress {
                         VStack(alignment: .leading, spacing: 12) {
                         Text(ticket.title).font(storyCardTitle).lineLimit(2)
+                        Picker("Story status", selection: Binding(
+                            get: { scenario.ticket?.stage ?? "planned" },
+                            set: { stage in
+                                _ = updateTicket { current in
+                                    if stage != "in-progress" { current.pause(at: Date()) }
+                                    else {
+                                        let stamp = ISO8601DateFormatter().string(from: Date())
+                                        current.lastWorkedAt = stamp
+                                        current.budgetStartedAt = current.budgetStartedAt ?? stamp
+                                    }
+                                    current.storyStatus = stage
+                                }
+                            }
+                        )) {
+                            Text("Planned").tag("planned")
+                            Text("In Progress").tag("in-progress")
+                            Text("Done").tag("done")
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 320)
+
                         Text(ticket.key + (ticket.storyPoints.map { "  ·  \($0) Story Points" } ?? ""))
                             .foregroundStyle(.secondary)
                         if focus == nil {
@@ -996,18 +1019,6 @@ struct BudgetView: View {
                         }
                         .modifier(StoryCard())
                         }
-                        if focus == nil {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("References").font(storyCardTitle)
-                                ForEach([("Pull Requests", "prs"), ("ChatGPT", "chats"),
-                                          ("Codex", "codex"), ("Worktrees", "worktrees")], id: \.1) { label, field in
-                                    Text(label).fontWeight(.semibold)
-                                    TextField("One reference per line", text: storyLinks(ticket.key, field: field), axis: .vertical)
-                                        .id(ticket.key + field)
-                                }
-                            }
-                            .modifier(StoryCard())
-                        }
                 if focus == .progress {
                     HStack(alignment: .top, spacing: 24) {
                         progressTable(tasks, showDivider: false)
@@ -1028,6 +1039,18 @@ struct BudgetView: View {
                     progressTable(tasks, showDivider: false)
                         .modifier(StoryCard())
                 }
+                        if focus == nil {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("References").font(storyCardTitle)
+                                ForEach([("Pull Requests", "prs"), ("ChatGPT", "chats"),
+                                          ("Codex", "codex"), ("Worktrees", "worktrees")], id: \.1) { label, field in
+                                    Text(label).fontWeight(.semibold)
+                                    TextField("One reference per line", text: storyLinks(ticket.key, field: field), axis: .vertical)
+                                        .id(ticket.key + field)
+                                }
+                            }
+                            .modifier(StoryCard())
+                        }
                     } else {
                         Text(scenario.ticketReadError ?? "Loading ticket…")
                             .font(.system(size: 17)).foregroundStyle(.orange)
@@ -2635,6 +2658,16 @@ final class BudgetWindow: NSWindow {
 
     override func sendEvent(_ event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if event.type == .keyDown, modifiers == .command {
+            if Int(event.keyCode) == kVK_ANSI_Q {
+                NSApp.terminate(nil)
+                return
+            }
+            if Int(event.keyCode) == kVK_ANSI_W {
+                orderOut(nil)
+                return
+            }
+        }
         if event.type == .keyDown, modifiers == .command, Int(event.keyCode) == kVK_ANSI_Comma {
             openSettings?()
             return
@@ -2865,21 +2898,35 @@ final class BudgetNotifications: NSObject, UNUserNotificationCenterDelegate {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let budgetNotifications = BudgetNotifications()
+    private var instanceLock: Int32 = -1
     var window: BudgetWindow?
     var menuItem: NSStatusItem?
     var shortcuts: [EventHotKeyRef] = []
     var scenario: Scenario?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let lockURL = URL.applicationSupportDirectory.appendingPathComponent("Sprint/gui.lock")
+        do {
+            try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            NSLog("Sprint could not prepare its instance lock: %@", error.localizedDescription)
+            NSApp.terminate(nil)
+            return
+        }
+        instanceLock = Darwin.open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        guard instanceLock >= 0, flock(instanceLock, LOCK_EX | LOCK_NB) == 0 else {
+            NSApp.terminate(nil)
+            return
+        }
         let panel = BudgetWindow(contentRect: NSRect(x: 0, y: 0, width: 570, height: 830),
-                                 styleMask: [.titled, .fullSizeContentView],
+                                 styleMask: [.titled, .closable, .fullSizeContentView],
                                  backing: .buffered, defer: false)
         panel.acceptsMouseMovedEvents = true
         panel.title = "Sprint"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = false
-        panel.level = .floating
+        panel.level = .normal
         panel.collectionBehavior = [.moveToActiveSpace]
         let budgetView = BudgetView()
         scenario = budgetView.scenario
