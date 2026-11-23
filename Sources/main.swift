@@ -996,18 +996,6 @@ struct BudgetView: View {
                         }
                         .modifier(StoryCard())
                         }
-                        if focus == nil {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("References").font(storyCardTitle)
-                                ForEach([("Pull Requests", "prs"), ("ChatGPT", "chats"),
-                                          ("Codex", "codex"), ("Worktrees", "worktrees")], id: \.1) { label, field in
-                                    Text(label).fontWeight(.semibold)
-                                    TextField("One reference per line", text: storyLinks(ticket.key, field: field), axis: .vertical)
-                                        .id(ticket.key + field)
-                                }
-                            }
-                            .modifier(StoryCard())
-                        }
                 if focus == .progress {
                     HStack(alignment: .top, spacing: 24) {
                         progressTable(tasks, showDivider: false)
@@ -1028,6 +1016,18 @@ struct BudgetView: View {
                     progressTable(tasks, showDivider: false)
                         .modifier(StoryCard())
                 }
+                        if focus == nil {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("References").font(storyCardTitle)
+                                ForEach([("Pull Requests", "prs"), ("ChatGPT", "chats"),
+                                          ("Codex", "codex"), ("Worktrees", "worktrees")], id: \.1) { label, field in
+                                    Text(label).fontWeight(.semibold)
+                                    TextField("One reference per line", text: storyLinks(ticket.key, field: field), axis: .vertical)
+                                        .id(ticket.key + field)
+                                }
+                            }
+                            .modifier(StoryCard())
+                        }
                     } else {
                         Text(scenario.ticketReadError ?? "Loading ticket…")
                             .font(.system(size: 17)).foregroundStyle(.orange)
@@ -2879,7 +2879,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = false
-        panel.level = .floating
+        panel.level = .normal
         panel.collectionBehavior = [.moveToActiveSpace]
         let budgetView = BudgetView()
         scenario = budgetView.scenario
