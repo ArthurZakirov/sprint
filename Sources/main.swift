@@ -958,6 +958,27 @@ struct BudgetView: View {
                         if focus != .progress {
                         VStack(alignment: .leading, spacing: 12) {
                         Text(ticket.title).font(storyCardTitle).lineLimit(2)
+                        Picker("Story status", selection: Binding(
+                            get: { scenario.ticket?.stage ?? "planned" },
+                            set: { stage in
+                                _ = updateTicket { current in
+                                    if stage != "in-progress" { current.pause(at: Date()) }
+                                    else {
+                                        let stamp = ISO8601DateFormatter().string(from: Date())
+                                        current.lastWorkedAt = stamp
+                                        current.budgetStartedAt = current.budgetStartedAt ?? stamp
+                                    }
+                                    current.storyStatus = stage
+                                }
+                            }
+                        )) {
+                            Text("Planned").tag("planned")
+                            Text("In Progress").tag("in-progress")
+                            Text("Done").tag("done")
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 320)
+
                         Text(ticket.key + (ticket.storyPoints.map { "  ·  \($0) Story Points" } ?? ""))
                             .foregroundStyle(.secondary)
                         if focus == nil {
