@@ -878,6 +878,8 @@ struct BudgetView: View {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(alignment: .top, spacing: 18) {
                     Text("Story").font(viewTitleFont)
+                    Button("Close") { NSApp.keyWindow?.orderOut(nil) }
+                        .help("Close Sprint window (⌘W). Quit Sprint with ⌘Q.")
                     storyBar
                         .padding(.horizontal, 10)
                         .frame(height: 106)
@@ -2656,6 +2658,16 @@ final class BudgetWindow: NSWindow {
 
     override func sendEvent(_ event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if event.type == .keyDown, modifiers == .command {
+            if Int(event.keyCode) == kVK_ANSI_Q {
+                NSApp.terminate(nil)
+                return
+            }
+            if Int(event.keyCode) == kVK_ANSI_W {
+                orderOut(nil)
+                return
+            }
+        }
         if event.type == .keyDown, modifiers == .command, Int(event.keyCode) == kVK_ANSI_Comma {
             openSettings?()
             return
@@ -2886,14 +2898,28 @@ final class BudgetNotifications: NSObject, UNUserNotificationCenterDelegate {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let budgetNotifications = BudgetNotifications()
+    private var instanceLock: Int32 = -1
     var window: BudgetWindow?
     var menuItem: NSStatusItem?
     var shortcuts: [EventHotKeyRef] = []
     var scenario: Scenario?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let lockURL = URL.applicationSupportDirectory.appendingPathComponent("Sprint/gui.lock")
+        do {
+            try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            NSLog("Sprint could not prepare its instance lock: %@", error.localizedDescription)
+            NSApp.terminate(nil)
+            return
+        }
+        instanceLock = Darwin.open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        guard instanceLock >= 0, flock(instanceLock, LOCK_EX | LOCK_NB) == 0 else {
+            NSApp.terminate(nil)
+            return
+        }
         let panel = BudgetWindow(contentRect: NSRect(x: 0, y: 0, width: 570, height: 830),
-                                 styleMask: [.titled, .fullSizeContentView],
+                                 styleMask: [.titled, .closable, .fullSizeContentView],
                                  backing: .buffered, defer: false)
         panel.acceptsMouseMovedEvents = true
         panel.title = "Sprint"
