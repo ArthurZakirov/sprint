@@ -2921,6 +2921,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = BudgetWindow(contentRect: NSRect(x: 0, y: 0, width: 570, height: 830),
                                  styleMask: [.titled, .closable, .fullSizeContentView],
                                  backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
         panel.acceptsMouseMovedEvents = true
         panel.title = "Sprint"
         panel.titleVisibility = .hidden
